@@ -1,0 +1,29 @@
+# Build artifacts
+.build/
+*.o
+*.d
+*.swp
+DerivedData/
+build/
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xccheckout
+*.moved-aside
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Binary (compiled separately)
+bose-ctl

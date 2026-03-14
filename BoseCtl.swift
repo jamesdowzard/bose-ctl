@@ -1,0 +1,217 @@
+/// bose-ctl: Manage Bose QC Ultra connections via RFCOMM protocol
+/// Reverse-engineered from the Bose Music protocol (deca-fade UUID)
+/// Protocol: [block, function, operator, length, ...payload]
+/// Operators: 0x01=GET, 0x03=RESP, 0x04=ERR, 0x05=START, 0x06=SET, 0x07=ACK
+
+import Foundation
+import IOBluetooth
+
+// === Configuration ===
+let BOSE_MAC = "E4:58:BC:C0:2F:72"
+let RFCOMM_CHANNEL: UInt8 = 2
+
+// Known device names — add yours here
+var knownDevices: [String: [UInt8]] = [
+    "mac":    [0xBC, 0xD0, 0x74, 0x11, 0xDB, 0x27],
+    "phone":  [0xA8, 0x76, 0x50, 0xD3, 0xB1, 0x1B],
+    "ipad":   [0xF4, 0x81, 0xC4, 0xB5, 0xFA, 0xAB],
+    // "dev4": [0xF8, 0x4D, 0x89, 0xC4, 0xB6, 0xED],
+    // "dev5": [0x14, 0xC1, 0x4E, 0xB7, 0xCB, 0x68],
+]
+
+// === Protocol handler ===
+class BoseConnection: NSObject, IOBluetoothRFCOMMChannelDelegate {
+    var channel: IOBluetoothRFCOMMChannel?
+    var responses: [Data] = []
+    private let semaphore = DispatchSemaphore(value: 0)
+
+    func rfcommChannelOpenComplete(_ ch: IOBluetoothRFCOMMChannel!, status: IOReturn) {
+        semaphore.signal()
+    }
+
+    func rfcommChannelData(_ ch: IOBluetoothRFCOMMChannel!, data ptr: UnsafeMutableRawPointer!, length len: Int) {
+        responses.append(Data(bytes: ptr, count: len))
+        semaphore.signal()
+    }
+
+    func rfcommChannelClosed(_ ch: IOBluetoothRFCOMMChannel!) {}
+
+    func connect() -> Bool {
+        guard let device = IOBluetoothDevice(addressString: BOSE_MAC) else {
+            print("Error: Headphones not found. Are they paired?")
+            return false
+        }
+        if !device.isConnected() {
+            print("Error: Headphones not connected to Mac.")
+            return false
+        }
+        var chRef: IOBluetoothRFCOMMChannel? = nil
+        let result = device.openRFCOMMChannelSync(&chRef, withChannelID: RFCOMM_CHANNEL, delegate: self)
+        guard result == 0 || chRef != nil else {
+            print("Error: Could not open protocol channel (code \(result)).")
+            return false
+        }
+        channel = chRef
+        _ = semaphore.wait(timeout: .now() + 3)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
+        return true
+    }
+
+    func send(_ bytes: [UInt8], timeout: TimeInterval = 3) -> Data? {
+        responses.removeAll()
+        var data = Data(bytes)
+        let wr = data.withUnsafeMutableBytes { ptr -> IOReturn in
+            channel!.writeSync(ptr.baseAddress!, length: UInt16(bytes.count))
+        }
+        if wr != 0 { return nil }
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while Date() < deadline {
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+            if !responses.isEmpty {
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+                break
+            }
+        }
+        return responses.first
+    }
+
+    func close() { channel?.close() }
+}
+
+// === Helpers ===
+func macStr(_ bytes: [UInt8]) -> String {
+    bytes.map { String(format: "%02X", $0) }.joined(separator: ":")
+}
+
+func nameFor(_ mac: [UInt8]) -> String {
+    for (name, addr) in knownDevices where addr == mac { return name }
+    return macStr(mac)
+}
+
+func parsePaired(_ data: Data) -> [[UInt8]] {
+    guard data.count >= 8, data[2] == 0x03 else { return [] }
+    let plen = Int(data[3])
+    guard plen >= 7, data.count >= 4 + plen else { return [] }
+    var devices: [[UInt8]] = []
+    for i in stride(from: 5, to: 4 + plen, by: 6) {
+        if i + 6 <= data.count { devices.append(Array(data[i..<i+6])) }
+    }
+    return devices
+}
+
+// === Commands ===
+func status(_ b: BoseConnection) {
+    if let r = b.send([0x04, 0x09, 0x01, 0x00]), r.count >= 10, r[2] == 0x03 {
+        print("Active:   \(nameFor(Array(r[4..<10]))) (\(macStr(Array(r[4..<10]))))")
+    }
+    if let r = b.send([0x05, 0x01, 0x01, 0x00]), r.count >= 7 {
+        print("Slots:    \(r[6])/2 connected")
+    }
+    if let r = b.send([0x04, 0x04, 0x01, 0x00]) {
+        let devs = parsePaired(r)
+        print("Paired:   \(devs.count) devices")
+        for (i, mac) in devs.enumerated() {
+            print("  \(i+1). \(nameFor(mac)) (\(macStr(mac)))")
+        }
+    }
+    if let r = b.send([0x00, 0x05, 0x01, 0x00]), r.count >= 5, r[2] == 0x03 {
+        let fw = String(data: r[4..<4+Int(r[3])], encoding: .utf8) ?? "?"
+        print("Firmware: \(fw)")
+    }
+}
+
+func connectDevice(_ b: BoseConnection, _ name: String) {
+    guard let mac = knownDevices[name.lowercased()] else {
+        print("Unknown device '\(name)'. Known: \(knownDevices.keys.sorted().joined(separator: ", "))")
+        return
+    }
+    print("Connecting \(name)...")
+    if let r = b.send([0x04, 0x02, 0x05, 0x06] + mac, timeout: 10) {
+        if r.count >= 4, r[2] == 0x07 { print("OK — \(name) connected.") }
+        else if r.count > 4, r[2] == 0x04, r[4] == 0x0b { print("Error: \(name) not paired. Re-pair from the device.") }
+        else if r.count >= 4, r[2] == 0x04 { print("Error: 0x\(String(format: "%02x", r.count > 4 ? r[4] : 0))") }
+    } else { print("No response.") }
+}
+
+func disconnectDevice(_ b: BoseConnection, _ name: String) {
+    guard let mac = knownDevices[name.lowercased()] else {
+        print("Unknown device '\(name)'. Known: \(knownDevices.keys.sorted().joined(separator: ", "))")
+        return
+    }
+    if name.lowercased() == "mac" {
+        print("Warning: Disconnecting Mac closes this channel. Use blueutil instead:")
+        print("  blueutil --disconnect \(BOSE_MAC)")
+        return
+    }
+    print("Disconnecting \(name)...")
+    if let r = b.send([0x04, 0x03, 0x05, 0x06] + mac, timeout: 5) {
+        if r.count >= 4, r[2] == 0x07 { print("OK — \(name) disconnected.") }
+        else { print("Done (device may not have been connected).") }
+    }
+}
+
+func swap(_ b: BoseConnection, _ name: String) {
+    guard let targetMac = knownDevices[name.lowercased()] else {
+        print("Unknown device '\(name)'. Known: \(knownDevices.keys.sorted().joined(separator: ", "))")
+        return
+    }
+    let macMac = knownDevices["mac"]!
+
+    guard let r = b.send([0x04, 0x04, 0x01, 0x00]) else {
+        print("Error: Could not query devices."); return
+    }
+    let paired = parsePaired(r)
+
+    // Disconnect any non-Mac, non-target device
+    for mac in paired where mac != macMac && mac != targetMac {
+        print("Disconnecting \(nameFor(mac))...")
+        _ = b.send([0x04, 0x03, 0x05, 0x06] + mac, timeout: 5)
+        Thread.sleep(forTimeInterval: 1)
+    }
+
+    // Connect target
+    print("Connecting \(name)...")
+    if let r2 = b.send([0x04, 0x02, 0x05, 0x06] + targetMac, timeout: 10) {
+        if r2.count >= 4, r2[2] == 0x07 { print("Swapped to \(name)!") }
+        else if r2.count > 4, r2[2] == 0x04, r2[4] == 0x0b { print("Error: \(name) not paired.") }
+        else if r2.count >= 4, r2[2] == 0x04 { print("Error: 0x\(String(format: "%02x", r2.count > 4 ? r2[4] : 0))") }
+    }
+}
+
+// === Main ===
+let args = CommandLine.arguments
+guard args.count >= 2 else {
+    print("""
+    bose-ctl — Manage Bose QC Ultra connections
+
+    Usage:
+      bose-ctl status              Show connection status
+      bose-ctl connect <device>    Connect a paired device
+      bose-ctl disconnect <device> Disconnect a device
+      bose-ctl swap <device>       Swap 2nd slot to this device
+      bose-ctl devices             List known device aliases
+
+    Devices: \(knownDevices.keys.sorted().joined(separator: ", "))
+    """)
+    exit(0)
+}
+
+let cmd = args[1].lowercased()
+
+if cmd == "devices" {
+    print("Known devices:")
+    for (n, m) in knownDevices.sorted(by: { $0.key < $1.key }) { print("  \(n): \(macStr(m))") }
+    exit(0)
+}
+
+let bose = BoseConnection()
+guard bose.connect() else { exit(1) }
+defer { bose.close() }
+
+switch cmd {
+case "status", "s":       status(bose)
+case "connect", "c":      guard args.count >= 3 else { print("Usage: bose-ctl connect <device>"); exit(1) }; connectDevice(bose, args[2])
+case "disconnect", "d":   guard args.count >= 3 else { print("Usage: bose-ctl disconnect <device>"); exit(1) }; disconnectDevice(bose, args[2])
+case "swap":              guard args.count >= 3 else { print("Usage: bose-ctl swap <device>"); exit(1) }; swap(bose, args[2])
+default:                  print("Unknown command: \(cmd)")
+}
