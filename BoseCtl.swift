@@ -16,7 +16,7 @@ var knownDevices: [String: [UInt8]] = [
     "phone":  [0xA8, 0x76, 0x50, 0xD3, 0xB1, 0x1B],
     "ipad":   [0xF4, 0x81, 0xC4, 0xB5, 0xFA, 0xAB],
     "iphone": [0xF8, 0x4D, 0x89, 0xC4, 0xB6, 0xED],
-    // "unknown": [0x14, 0xC1, 0x4E, 0xB7, 0xCB, 0x68],
+    "tv":     [0x14, 0xC1, 0x4E, 0xB7, 0xCB, 0x68],  // Watkin Lounge TV (Google/Chromecast)
 ]
 
 // === Wispr Flow management ===
@@ -127,7 +127,31 @@ class BoseConnection: NSObject, IOBluetoothRFCOMMChannelDelegate {
                 chRef?.close()
             }
         }
-        print("Error: No available RFCOMM channel. Try toggling Bluetooth off/on in System Settings.")
+        // Last resort — power cycle Bluetooth entirely
+        fputs("Power cycling Bluetooth...\n", stderr)
+        let off = Process(); off.launchPath = "/opt/homebrew/bin/blueutil"; off.arguments = ["--power", "0"]; try? off.run(); off.waitUntilExit()
+        Thread.sleep(forTimeInterval: 3)
+        let on = Process(); on.launchPath = "/opt/homebrew/bin/blueutil"; on.arguments = ["--power", "1"]; try? on.run(); on.waitUntilExit()
+        Thread.sleep(forTimeInterval: 5)
+        let conn = Process(); conn.launchPath = "/opt/homebrew/bin/blueutil"; conn.arguments = ["--connect", BOSE_MAC]; try? conn.run(); conn.waitUntilExit()
+        Thread.sleep(forTimeInterval: 5)
+        for chId in channels {
+            var chRef: IOBluetoothRFCOMMChannel? = nil
+            let result = device.openRFCOMMChannelSync(&chRef, withChannelID: chId, delegate: self)
+            if result == 0, let ch = chRef, ch.isOpen() {
+                channel = ch
+                _ = semaphore.wait(timeout: .now() + 2)
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
+                if let r = send([0x00, 0x05, 0x01, 0x00], timeout: 2), r.count >= 4, r[0] == 0x00, r[1] == 0x05 {
+                    return true
+                }
+                ch.close()
+                channel = nil
+            } else {
+                chRef?.close()
+            }
+        }
+        print("Error: No available RFCOMM channel after power cycle.")
         return false
     }
 
