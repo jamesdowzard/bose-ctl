@@ -77,6 +77,27 @@ class BoseConnection: NSObject, IOBluetoothRFCOMMChannelDelegate {
 
     func rfcommChannelClosed(_ ch: IOBluetoothRFCOMMChannel!) {}
 
+    private func tryChannels(_ device: IOBluetoothDevice) -> Bool {
+        let channels: [UInt8] = [2, 14, 22, 25]
+        for chId in channels {
+            var chRef: IOBluetoothRFCOMMChannel? = nil
+            let result = device.openRFCOMMChannelSync(&chRef, withChannelID: chId, delegate: self)
+            if result == 0, let ch = chRef, ch.isOpen() {
+                channel = ch
+                _ = semaphore.wait(timeout: .now() + 1)
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+                if let r = send([0x00, 0x05, 0x01, 0x00], timeout: 1.5), r.count >= 4, r[0] == 0x00, r[1] == 0x05 {
+                    return true
+                }
+                ch.close()
+                channel = nil
+            } else {
+                chRef?.close()
+            }
+        }
+        return false
+    }
+
     func connect() -> Bool {
         guard let device = IOBluetoothDevice(addressString: BOSE_MAC) else {
             print("Error: Headphones not found. Are they paired?")
@@ -86,72 +107,15 @@ class BoseConnection: NSObject, IOBluetoothRFCOMMChannelDelegate {
             print("Error: Headphones not connected to Mac.")
             return false
         }
-        // Try multiple RFCOMM channels — audioaccessoryd swaps between them
-        let channels: [UInt8] = [2, 14, 22, 25]
-        for chId in channels {
-            var chRef: IOBluetoothRFCOMMChannel? = nil
-            let result = device.openRFCOMMChannelSync(&chRef, withChannelID: chId, delegate: self)
-            if result == 0, let ch = chRef, ch.isOpen() {
-                channel = ch
-                _ = semaphore.wait(timeout: .now() + 2)
-                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
-                // Verify channel responds to Bose protocol
-                if let r = send([0x00, 0x05, 0x01, 0x00], timeout: 2), r.count >= 4, r[0] == 0x00, r[1] == 0x05 {
-                    return true
-                }
-                ch.close()
-                channel = nil
-            } else {
-                chRef?.close()
-            }
-        }
-        // All channels locked — cycle BT connection and retry
-        fputs("Cycling Bluetooth connection...\n", stderr)
+        // Try channels directly first
+        if tryChannels(device) { return true }
+        // Cycle BT connection — quick disconnect/reconnect frees channels from audioaccessoryd
         device.closeConnection()
-        Thread.sleep(forTimeInterval: 3)
+        Thread.sleep(forTimeInterval: 2)
         device.openConnection()
-        Thread.sleep(forTimeInterval: 5)
-        for chId in channels {
-            var chRef: IOBluetoothRFCOMMChannel? = nil
-            let result = device.openRFCOMMChannelSync(&chRef, withChannelID: chId, delegate: self)
-            if result == 0, let ch = chRef, ch.isOpen() {
-                channel = ch
-                _ = semaphore.wait(timeout: .now() + 2)
-                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
-                if let r = send([0x00, 0x05, 0x01, 0x00], timeout: 2), r.count >= 4, r[0] == 0x00, r[1] == 0x05 {
-                    return true
-                }
-                ch.close()
-                channel = nil
-            } else {
-                chRef?.close()
-            }
-        }
-        // Last resort — power cycle Bluetooth entirely
-        fputs("Power cycling Bluetooth...\n", stderr)
-        let off = Process(); off.launchPath = "/opt/homebrew/bin/blueutil"; off.arguments = ["--power", "0"]; try? off.run(); off.waitUntilExit()
         Thread.sleep(forTimeInterval: 3)
-        let on = Process(); on.launchPath = "/opt/homebrew/bin/blueutil"; on.arguments = ["--power", "1"]; try? on.run(); on.waitUntilExit()
-        Thread.sleep(forTimeInterval: 5)
-        let conn = Process(); conn.launchPath = "/opt/homebrew/bin/blueutil"; conn.arguments = ["--connect", BOSE_MAC]; try? conn.run(); conn.waitUntilExit()
-        Thread.sleep(forTimeInterval: 5)
-        for chId in channels {
-            var chRef: IOBluetoothRFCOMMChannel? = nil
-            let result = device.openRFCOMMChannelSync(&chRef, withChannelID: chId, delegate: self)
-            if result == 0, let ch = chRef, ch.isOpen() {
-                channel = ch
-                _ = semaphore.wait(timeout: .now() + 2)
-                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
-                if let r = send([0x00, 0x05, 0x01, 0x00], timeout: 2), r.count >= 4, r[0] == 0x00, r[1] == 0x05 {
-                    return true
-                }
-                ch.close()
-                channel = nil
-            } else {
-                chRef?.close()
-            }
-        }
-        print("Error: No available RFCOMM channel after power cycle.")
+        if tryChannels(device) { return true }
+        print("Error: No RFCOMM channel available. Try toggling Bluetooth in System Settings.")
         return false
     }
 
