@@ -27,3 +27,4 @@ xcuserdata/
 
 # Binary (compiled separately)
 bose-ctl
+.worktrees/
