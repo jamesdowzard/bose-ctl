@@ -59,6 +59,7 @@ let log = Logger.shared
 // === RFCOMM Connection Manager ===
 class RFCOMMManager: NSObject, IOBluetoothRFCOMMChannelDelegate {
     var channel: IOBluetoothRFCOMMChannel?
+    var hasCycledBT = false
     var isConnected = false
     private var responseData: [Data] = []
     private var responseSemaphore = DispatchSemaphore(value: 0)
@@ -120,6 +121,7 @@ class RFCOMMManager: NSObject, IOBluetoothRFCOMMChannelDelegate {
                 if let r = sendCommand([0x00, 0x05, 0x01, 0x00], timeout: 2),
                    r.count >= 4, r[0] == 0x00, r[1] == 0x05 {
                     isConnected = true
+                hasCycledBT = false
                     log.log("RFCOMM channel \(chId) acquired and verified")
                     cancelReconnect()
                     return
@@ -133,7 +135,20 @@ class RFCOMMManager: NSObject, IOBluetoothRFCOMMChannelDelegate {
             }
         }
 
-        log.log("All RFCOMM channels failed, will retry in \(Int(RECONNECT_INTERVAL))s")
+        // Power cycle BT to clear audioaccessoryd locks
+        if !hasCycledBT {
+            hasCycledBT = true
+            log.log("All channels locked by audioaccessoryd — power cycling Bluetooth")
+            let off = Process(); off.launchPath = "/opt/homebrew/bin/blueutil"; off.arguments = ["--power", "0"]; try? off.run(); off.waitUntilExit()
+            Thread.sleep(forTimeInterval: 3)
+            let on = Process(); on.launchPath = "/opt/homebrew/bin/blueutil"; on.arguments = ["--power", "1"]; try? on.run(); on.waitUntilExit()
+            Thread.sleep(forTimeInterval: 5)
+            let conn = Process(); conn.launchPath = "/opt/homebrew/bin/blueutil"; conn.arguments = ["--connect", BOSE_MAC]; try? conn.run(); conn.waitUntilExit()
+            Thread.sleep(forTimeInterval: 5)
+            connectRFCOMM()
+            return
+        }
+        log.log("All RFCOMM channels failed after power cycle, will retry in \(Int(RECONNECT_INTERVAL))s")
         scheduleReconnect()
     }
 
