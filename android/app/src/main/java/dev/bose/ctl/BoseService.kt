@@ -105,6 +105,20 @@ class BoseService : Service() {
         return BoseProtocol.connect()
     }
 
+    /**
+     * Build connected device list from protocol data.
+     * getConnectedDevices() returns non-active connected devices.
+     * Phone is always connected (it runs the RFCOMM session) so ensure it's included.
+     */
+    private fun queryConnectedList(activeDevice: String): ArrayList<String> {
+        val others = BoseProtocol.getConnectedDevices().map { BoseProtocol.nameForMac(it) }
+        val connected = linkedSetOf(activeDevice)
+        connected.addAll(others)
+        // Phone is always connected — it's running this RFCOMM session
+        if (activeDevice != "phone") connected.add("phone")
+        return ArrayList(connected)
+    }
+
     private fun switchDevice(deviceName: String) {
         try {
             if (!ensureConnected()) {
@@ -122,11 +136,7 @@ class BoseService : Service() {
             val success = BoseProtocol.connectDevice(mac)
 
             if (success) {
-
-                // Query actual connected state from headphones
-                val others = BoseProtocol.getConnectedDevices().map { BoseProtocol.nameForMac(it) }
-                val connected = ArrayList(listOf(deviceName) + others)
-                broadcastStatus(deviceName, true, connected)
+                broadcastStatus(deviceName, true, queryConnectedList(deviceName))
             } else {
                 broadcastError("Failed to switch to $deviceName")
             }
@@ -146,12 +156,7 @@ class BoseService : Service() {
             val activeMac = BoseProtocol.getActiveDevice()
             if (activeMac != null) {
                 val name = BoseProtocol.nameForMac(activeMac)
-
-                // getConnectedDevices returns non-active connected devices
-                // Combined with active device = full connected list
-                val others = BoseProtocol.getConnectedDevices().map { BoseProtocol.nameForMac(it) }
-                val connected = ArrayList(listOf(name) + others)
-                broadcastStatus(name, true, connected)
+                broadcastStatus(name, true, queryConnectedList(name))
             } else {
                 broadcastError("Could not get active device")
             }
