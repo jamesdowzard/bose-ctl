@@ -1,15 +1,11 @@
 /// bosed: Background daemon — TCP relay to phone's BoseService over Tailscale
-/// Keeps a Unix socket server (/tmp/bosed.sock) for local clients (bose-ctl, Hammerspoon),
-/// and forwards commands to the phone's BoseService over Tailscale TCP.
+/// Phone is the brain; bosed is a passive relay that also manages Mac BT on command.
 ///
-/// Architecture:
-///   bose-ctl / Hammerspoon
-///       -> JSON over Unix socket (/tmp/bosed.sock)
-///   bosed (this daemon)
-///       -> JSON over TCP (Tailscale)
-///   Phone BoseService
-///       -> RFCOMM
-///   Bose QC Ultra headphones
+/// Two channels:
+///   1. Unix socket (/tmp/bosed.sock) for local clients → one-shot TCP to phone
+///   2. Persistent subscribe connection to phone → receives push commands (bt_connect, bt_disconnect)
+///
+/// bosed does NOT auto-connect Mac BT. Phone tells bosed when to connect/disconnect.
 
 import Foundation
 
@@ -18,6 +14,8 @@ let PHONE_HOST = "100.97.121.67"   // Tailscale IP of phone
 let PHONE_PORT: UInt16 = 8899
 let SOCKET_PATH = "/tmp/bosed.sock"
 let LOG_PATH = NSHomeDirectory() + "/Library/Logs/bosed.log"
+let BOSE_MAC = "E4:58:BC:C0:2F:72"
+let BLUEUTIL = "/opt/homebrew/bin/blueutil"
 
 // === Logging ===
 class Logger {
@@ -38,7 +36,6 @@ class Logger {
         let ts = formatter.string(from: Date())
         let line = "[\(ts)] \(msg)\n"
         handle?.write(line.data(using: .utf8) ?? Data())
-        // Also print to stdout for launchd capture
         print(line, terminator: "")
         fflush(stdout)
     }
@@ -46,7 +43,34 @@ class Logger {
 
 let log = Logger.shared
 
-// === TCP Client to Phone ===
+// === Bluetooth Control ===
+func runBlueutil(_ args: [String]) -> Bool {
+    let proc = Process()
+    proc.launchPath = BLUEUTIL
+    proc.arguments = args
+    do {
+        try proc.run()
+        proc.waitUntilExit()
+        return proc.terminationStatus == 0
+    } catch {
+        log.log("blueutil error: \(error.localizedDescription)")
+        return false
+    }
+}
+
+func btConnect() {
+    log.log("BT: connecting Mac to headphones")
+    let ok = runBlueutil(["--connect", BOSE_MAC])
+    log.log("BT: connect \(ok ? "ok" : "failed")")
+}
+
+func btDisconnect() {
+    log.log("BT: disconnecting Mac from headphones")
+    let ok = runBlueutil(["--disconnect", BOSE_MAC])
+    log.log("BT: disconnect \(ok ? "ok" : "failed")")
+}
+
+// === TCP Client to Phone (one-shot for commands) ===
 class PhoneClient {
     let host: String
     let port: UInt16
@@ -56,10 +80,7 @@ class PhoneClient {
         self.port = port
     }
 
-    /// Send a JSON request to the phone and return the response string.
-    /// Returns nil on any failure (connection refused, timeout, etc.).
     func send(_ request: String, timeout: TimeInterval = 10) -> String? {
-        // Create TCP socket
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else {
             log.log("PhoneClient: socket() failed — errno=\(errno)")
@@ -67,18 +88,15 @@ class PhoneClient {
         }
         defer { close(fd) }
 
-        // Set send/recv timeouts
         var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
-        // Resolve host
         guard let hostEntry = gethostbyname(host) else {
             log.log("PhoneClient: gethostbyname failed for \(host)")
             return nil
         }
 
-        // Build sockaddr_in and connect
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = port.bigEndian
@@ -94,7 +112,6 @@ class PhoneClient {
             return nil
         }
 
-        // Write request (JSON + newline delimiter)
         let payload = request.hasSuffix("\n") ? request : request + "\n"
         guard let requestData = payload.data(using: .utf8) else { return nil }
         let written = requestData.withUnsafeBytes { ptr in
@@ -105,10 +122,8 @@ class PhoneClient {
             return nil
         }
 
-        // Shutdown write side so server knows request is complete
         shutdown(fd, SHUT_WR)
 
-        // Read response (up to 4KB)
         var buffer = [UInt8](repeating: 0, count: 4096)
         var totalRead = 0
 
@@ -127,6 +142,146 @@ class PhoneClient {
     }
 }
 
+// === Subscribe Connection (persistent, receives push commands from phone) ===
+class SubscribeClient {
+    let host: String
+    let port: UInt16
+    private let queue = DispatchQueue(label: "bosed.subscribe")
+
+    init(host: String, port: UInt16) {
+        self.host = host
+        self.port = port
+    }
+
+    func start() {
+        queue.async { [self] in
+            while true {
+                log.log("Subscribe: connecting to phone...")
+                self.connectAndListen()
+                log.log("Subscribe: disconnected, reconnecting in 5s...")
+                sleep(5)
+            }
+        }
+    }
+
+    private func connectAndListen() {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            log.log("Subscribe: socket() failed — errno=\(errno)")
+            return
+        }
+        defer { close(fd) }
+
+        // Connection timeout
+        var tv = timeval(tv_sec: 10, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+        guard let hostEntry = gethostbyname(host) else {
+            log.log("Subscribe: gethostbyname failed")
+            return
+        }
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        memcpy(&addr.sin_addr, hostEntry.pointee.h_addr_list[0]!, Int(hostEntry.pointee.h_length))
+
+        let connectResult = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                Darwin.connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard connectResult == 0 else {
+            log.log("Subscribe: connect failed — errno=\(errno)")
+            return
+        }
+
+        // Send subscribe registration
+        let subscribeMsg = "{\"cmd\":\"subscribe\",\"role\":\"mac\"}\n"
+        guard let data = subscribeMsg.data(using: .utf8) else { return }
+        let written = data.withUnsafeBytes { ptr in
+            Darwin.write(fd, ptr.baseAddress!, data.count)
+        }
+        guard written == data.count else {
+            log.log("Subscribe: write failed")
+            return
+        }
+
+        // Don't shutdown write side — need to keep connection open
+
+        // Read the subscribe ACK response first
+        var buf = [UInt8](repeating: 0, count: 4096)
+
+        // Set read timeout for initial ACK
+        var ackTv = timeval(tv_sec: 10, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &ackTv, socklen_t(MemoryLayout<timeval>.size))
+
+        let ackN = read(fd, &buf, buf.count)
+        if ackN > 0 {
+            let ackStr = String(bytes: buf[0..<ackN], encoding: .utf8) ?? ""
+            log.log("Subscribe: registered — \(ackStr.trimmingCharacters(in: .whitespacesAndNewlines))")
+        } else {
+            log.log("Subscribe: no ACK received")
+            return
+        }
+
+        // Clear timeout for push listening (block indefinitely)
+        var noTimeout = timeval(tv_sec: 0, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &noTimeout, socklen_t(MemoryLayout<timeval>.size))
+
+        log.log("Subscribe: listening for push commands...")
+
+        // Read push commands in a loop (newline-delimited JSON)
+        var lineBuf = Data()
+        var readBuf = [UInt8](repeating: 0, count: 1024)
+
+        while true {
+            let n = read(fd, &readBuf, readBuf.count)
+            if n <= 0 {
+                log.log("Subscribe: connection closed (read=\(n))")
+                return
+            }
+
+            lineBuf.append(contentsOf: readBuf[0..<n])
+
+            // Process complete lines
+            while let newlineIdx = lineBuf.firstIndex(of: UInt8(ascii: "\n")) {
+                let lineData = lineBuf[lineBuf.startIndex..<newlineIdx]
+                lineBuf = Data(lineBuf[(newlineIdx + 1)...])
+
+                guard let lineStr = String(data: lineData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !lineStr.isEmpty else { continue }
+
+                handlePushCommand(lineStr)
+            }
+        }
+    }
+
+    private func handlePushCommand(_ json: String) {
+        log.log("Push received: \(json)")
+
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let push = obj["push"] as? String else {
+            log.log("Push: invalid format")
+            return
+        }
+
+        switch push {
+        case "bt_connect":
+            DispatchQueue.global(qos: .userInitiated).async {
+                btConnect()
+            }
+        case "bt_disconnect":
+            DispatchQueue.global(qos: .userInitiated).async {
+                btDisconnect()
+            }
+        default:
+            log.log("Push: unknown command '\(push)'")
+        }
+    }
+}
+
 // === Unix Socket Server ===
 class SocketServer {
     let phoneClient: PhoneClient
@@ -138,7 +293,6 @@ class SocketServer {
     }
 
     func start() {
-        // Clean up stale socket
         unlink(SOCKET_PATH)
 
         serverFd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -176,7 +330,6 @@ class SocketServer {
 
         log.log("Unix socket listening on \(SOCKET_PATH)")
 
-        // Accept connections on a background queue
         acceptQueue.async { [weak self] in
             while let self = self, self.serverFd >= 0 {
                 let clientFd = accept(self.serverFd, nil, nil)
@@ -184,7 +337,6 @@ class SocketServer {
                     if errno == EBADF { break }
                     continue
                 }
-                // Handle on background thread — no RunLoop dependency now
                 DispatchQueue.global(qos: .userInitiated).async {
                     self.handleClient(clientFd)
                 }
@@ -195,7 +347,6 @@ class SocketServer {
     func handleClient(_ fd: Int32) {
         defer { close(fd) }
 
-        // Read request (max 4KB)
         var buffer = [UInt8](repeating: 0, count: 4096)
         let bytesRead = read(fd, &buffer, buffer.count)
         guard bytesRead > 0 else { return }
@@ -214,13 +365,11 @@ class SocketServer {
     }
 
     func processRequest(_ raw: String) -> String {
-        // Validate it's JSON
         guard let data = raw.data(using: .utf8),
               let _ = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return "{\"ok\":false,\"error\":\"Invalid JSON request\"}"
         }
 
-        // Forward to phone over TCP
         guard let response = phoneClient.send(raw) else {
             return "{\"ok\":false,\"error\":\"phone unreachable\"}"
         }
@@ -238,19 +387,13 @@ class SocketServer {
 }
 
 // === Main ===
-log.log("bosed starting (pid \(ProcessInfo.processInfo.processIdentifier)) — TCP relay mode")
+log.log("bosed starting (pid \(ProcessInfo.processInfo.processIdentifier)) — smart relay mode")
 log.log("Forwarding to phone at \(PHONE_HOST):\(PHONE_PORT)")
-
-// Keep Mac BT-connected to headphones so it's switchable
-let btConnect = Process()
-btConnect.launchPath = "/opt/homebrew/bin/blueutil"
-btConnect.arguments = ["--connect", "E4:58:BC:C0:2F:72"]
-try? btConnect.run()
-btConnect.waitUntilExit()
-log.log("BT connect to headphones: \(btConnect.terminationStatus == 0 ? "ok" : "failed")")
+log.log("Mac BT managed by phone — no auto-connect")
 
 let phoneClient = PhoneClient(host: PHONE_HOST, port: PHONE_PORT)
 let socketServer = SocketServer(phoneClient: phoneClient)
+let subscribeClient = SubscribeClient(host: PHONE_HOST, port: PHONE_PORT)
 
 // Signal handlers for clean shutdown
 signal(SIGTERM) { _ in
@@ -265,8 +408,8 @@ signal(SIGINT) { _ in
 }
 
 socketServer.start()
+subscribeClient.start()
 
-log.log("bosed ready — relay active")
+log.log("bosed ready — relay active, subscribe channel starting")
 
-// Run the main run loop forever
 RunLoop.current.run()
