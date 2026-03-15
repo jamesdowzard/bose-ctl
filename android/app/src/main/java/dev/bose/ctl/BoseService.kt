@@ -107,15 +107,24 @@ class BoseService : Service() {
 
     /**
      * Build connected device list from protocol data.
-     * getConnectedDevices() returns non-active connected devices.
-     * Phone is always connected (it runs the RFCOMM session) so ensure it's included.
+     * getConnectedDevices() (0x05,0x01) returns non-active connected devices.
+     * Active device + those = full connected list.
+     */
+    /**
+     * Build connected device list from protocol + multipoint logic.
+     *
+     * getConnectedDevices() (0x05,0x01) returns BT-linked devices but excludes the
+     * querying device (phone) from the response. Phone is implicitly connected since
+     * it's running this RFCOMM session. Add it back if within the 2-device multipoint
+     * limit — if the limit is already full, phone was dropped to make room.
      */
     private fun queryConnectedList(activeDevice: String): ArrayList<String> {
-        val others = BoseProtocol.getConnectedDevices().map { BoseProtocol.nameForMac(it) }
+        val btConnected = BoseProtocol.getConnectedDevices().map { BoseProtocol.nameForMac(it) }
         val connected = linkedSetOf(activeDevice)
-        connected.addAll(others)
-        // Phone is always connected — it's running this RFCOMM session
-        if (activeDevice != "phone") connected.add("phone")
+        connected.addAll(btConnected)
+        if ("phone" !in connected && connected.size < 2) {
+            connected.add("phone")
+        }
         return ArrayList(connected)
     }
 
@@ -136,6 +145,8 @@ class BoseService : Service() {
             val success = BoseProtocol.connectDevice(mac)
 
             if (success) {
+                // Brief delay for headphones to update connected state
+                Thread.sleep(500)
                 broadcastStatus(deviceName, true, queryConnectedList(deviceName))
             } else {
                 broadcastError("Failed to switch to $deviceName")
