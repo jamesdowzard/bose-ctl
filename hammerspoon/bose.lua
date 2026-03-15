@@ -95,6 +95,7 @@ local function buildHTML()
 <meta charset="utf-8">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: transparent; }
   body {
     background: #0c0c0c;
     color: #e0e0e0;
@@ -103,6 +104,8 @@ local function buildHTML()
     user-select: none;
     -webkit-user-select: none;
     cursor: default;
+    border-radius: 16px;
+    border: 1px solid #2a2a2a;
   }
   .container {
     display: flex;
@@ -183,6 +186,7 @@ local function buildHTML()
     50% { opacity: 1; }
   }
   .overlay {
+    border-radius: 16px;
     position: absolute;
     inset: 0;
     display: flex;
@@ -408,7 +412,7 @@ local function showPanel()
   webview:level(hs.drawing.windowLevels.floating)
   webview:allowTextEntry(true)
   webview:closeOnEscape(false) -- handled in JS
-  webview:transparent(false)
+  webview:transparent(true)
   webview:alpha(0.97)
   webview:shadow(true)
 
@@ -426,6 +430,15 @@ local function showPanel()
   end)
 
   webview:html(buildHTML())
+
+  -- Timeout: if status query takes >15s, show error
+  hs.timer.doAfter(15, function()
+    if activeTask and activeTask:isRunning() then
+      activeTask:terminate()
+      activeTask = nil
+      evalJS("onError('timeout — try again')")
+    end
+  end)
   webview:show()
   webview:hswindow():focus()
 
