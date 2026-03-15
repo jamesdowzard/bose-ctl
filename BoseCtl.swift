@@ -259,24 +259,41 @@ func parsePaired(_ data: Data) -> [[UInt8]] {
     return devices
 }
 
-// === Direct RFCOMM Commands ===
+func parseConnected(_ data: Data) -> [[UInt8]] {
+    // Response: [05, 01, 03, len, 00, flags, count, ...MACs]
+    guard data.count >= 7, data[0] == 0x05, data[1] == 0x01, data[2] == 0x03 else { return [] }
+    let count = Int(data[6])
+    var devices: [[UInt8]] = []
+    for i in 0..<count {
+        let offset = 7 + (i * 6)
+        if offset + 6 <= data.count {
+            devices.append(Array(data[offset..<offset+6]))
+        }
+    }
+    return devices
+}
+
+// === Commands ===
 func status(_ b: BoseConnection) {
     if let r = b.send([0x04, 0x09, 0x01, 0x00]), r.count >= 10, r[2] == 0x03 {
-        print("Active:   \(nameFor(Array(r[4..<10]))) (\(macStr(Array(r[4..<10]))))")
+        print("Active:    \(nameFor(Array(r[4..<10]))) (\(macStr(Array(r[4..<10]))))")
     }
     if let r = b.send([0x05, 0x01, 0x01, 0x00]), r.count >= 7 {
-        print("Slots:    \(r[6])/2 connected")
+        let connected = parseConnected(r)
+        let names = connected.map { "\(nameFor($0)) (\(macStr($0)))" }
+        print("Connected: \(names.joined(separator: ", "))")
+        print("Slots:     \(r[6])/2 connected")
     }
     if let r = b.send([0x04, 0x04, 0x01, 0x00]) {
         let devs = parsePaired(r)
-        print("Paired:   \(devs.count) devices")
+        print("Paired:    \(devs.count) devices")
         for (i, mac) in devs.enumerated() {
             print("  \(i+1). \(nameFor(mac)) (\(macStr(mac)))")
         }
     }
     if let r = b.send([0x00, 0x05, 0x01, 0x00]), r.count >= 5, r[2] == 0x03 {
         let fw = String(data: r[4..<4+Int(r[3])], encoding: .utf8) ?? "?"
-        print("Firmware: \(fw)")
+        print("Firmware:  \(fw)")
     }
 }
 
