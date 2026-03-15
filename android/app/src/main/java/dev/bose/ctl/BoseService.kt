@@ -3,6 +3,7 @@ package dev.bose.ctl
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Binder
@@ -14,8 +15,14 @@ import java.util.concurrent.Executors
 
 /**
  * Foreground service for managing Bose RFCOMM connection.
- * Must run as foreground service because Android 12+ blocks background service starts
- * from widget BroadcastReceivers.
+ *
+ * Tracks two multipoint slots locally:
+ *   Slot 1 (green)  = active audio source
+ *   Slot 2 (orange) = other connected device
+ *
+ * Rules when tapping a device:
+ *   - Already in a slot → just swap green/orange
+ *   - New device → takes slot 1, old slot 1 → slot 2, old slot 2 drops out
  */
 class BoseService : Service() {
 
@@ -23,6 +30,7 @@ class BoseService : Service() {
         private const val TAG = "BoseService"
         private const val CHANNEL_ID = "bose_ctl"
         private const val NOTIFICATION_ID = 1
+        private const val PREFS = "bose_ctl"
 
         const val ACTION_CONNECT_DEVICE = "dev.bose.ctl.CONNECT_DEVICE"
         const val EXTRA_DEVICE_NAME = "device_name"
@@ -105,28 +113,46 @@ class BoseService : Service() {
         return BoseProtocol.connect()
     }
 
-    /**
-     * Build connected device list from protocol data.
-     * getConnectedDevices() (0x05,0x01) returns non-active connected devices.
-     * Active device + those = full connected list.
-     */
-    /**
-     * Build connected device list from protocol + multipoint logic.
-     *
-     * getConnectedDevices() (0x05,0x01) returns BT-linked devices but excludes the
-     * querying device (phone) from the response. Phone is implicitly connected since
-     * it's running this RFCOMM session. Add it back if within the 2-device multipoint
-     * limit — if the limit is already full, phone was dropped to make room.
-     */
-    private fun queryConnectedList(activeDevice: String): ArrayList<String> {
-        val btConnected = BoseProtocol.getConnectedDevices().map { BoseProtocol.nameForMac(it) }
-        val connected = linkedSetOf(activeDevice)
-        connected.addAll(btConnected)
-        if ("phone" !in connected && connected.size < 2) {
-            connected.add("phone")
+    // --- Slot state (persisted in SharedPreferences) ---
+
+    private val prefs by lazy { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+
+    private var slot1: String?
+        get() = prefs.getString("active_device", null)
+        set(v) = prefs.edit().putString("active_device", v).apply()
+
+    private var slot2: String?
+        get() = prefs.getString("connected_device", null)
+        set(v) {
+            if (v != null) prefs.edit().putString("connected_device", v).apply()
+            else prefs.edit().remove("connected_device").apply()
         }
-        return ArrayList(connected)
+
+    /**
+     * Update slots when switching to a device.
+     *
+     * - Already in a slot → swap (no device dropped)
+     * - New device → pushes: new→slot1, old slot1→slot2, old slot2→gone
+     */
+    private fun updateSlots(newActive: String) {
+        val s1 = slot1
+        val s2 = slot2
+
+        when (newActive) {
+            s1 -> { /* Already active, no change */ }
+            s2 -> { slot1 = newActive; slot2 = s1 }
+            else -> { slot1 = newActive; slot2 = s1 }
+        }
     }
+
+    private fun broadcastCurrentState() {
+        val active = slot1 ?: return
+        val connected = arrayListOf(active)
+        slot2?.let { connected.add(it) }
+        broadcastStatus(active, true, connected)
+    }
+
+    // --- Device switching ---
 
     private fun switchDevice(deviceName: String) {
         try {
@@ -141,13 +167,12 @@ class BoseService : Service() {
                 return
             }
 
-            Log.i(TAG, "Switching to $deviceName")
+            Log.i(TAG, "Switching to $deviceName (slot1=${slot1} slot2=${slot2})")
             val success = BoseProtocol.connectDevice(mac)
 
             if (success) {
-                // Brief delay for headphones to update connected state
-                Thread.sleep(500)
-                broadcastStatus(deviceName, true, queryConnectedList(deviceName))
+                updateSlots(deviceName)
+                broadcastCurrentState()
             } else {
                 broadcastError("Failed to switch to $deviceName")
             }
@@ -164,10 +189,22 @@ class BoseService : Service() {
                 return
             }
 
+            // Seed from protocol on refresh (e.g. app first launch)
             val activeMac = BoseProtocol.getActiveDevice()
             if (activeMac != null) {
                 val name = BoseProtocol.nameForMac(activeMac)
-                broadcastStatus(name, true, queryConnectedList(name))
+                if (slot1 == null) {
+                    // First time — seed slots from protocol
+                    slot1 = name
+                    val others = BoseProtocol.getConnectedDevices().map { BoseProtocol.nameForMac(it) }
+                    slot2 = others.firstOrNull { it != name }
+                    // If protocol didn't report a second device and phone isn't active, assume phone
+                    if (slot2 == null && name != "phone") slot2 = "phone"
+                } else if (name != slot1) {
+                    // Active device changed externally (e.g. from Bose app)
+                    updateSlots(name)
+                }
+                broadcastCurrentState()
             } else {
                 broadcastError("Could not get active device")
             }
@@ -176,6 +213,8 @@ class BoseService : Service() {
             broadcastError(e.message ?: "Unknown error")
         }
     }
+
+    // --- Broadcasting ---
 
     private fun broadcastStatus(activeDevice: String, success: Boolean, connectedDevices: ArrayList<String>? = null) {
         val intent = Intent(BROADCAST_STATUS).apply {
