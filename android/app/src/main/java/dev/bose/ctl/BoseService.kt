@@ -22,6 +22,7 @@ class BoseService : Service() {
 
         const val BROADCAST_STATUS = "dev.bose.ctl.STATUS_UPDATE"
         const val EXTRA_ACTIVE_DEVICE = "active_device"
+        const val EXTRA_CONNECTED_DEVICES = "connected_devices"
         const val EXTRA_SUCCESS = "success"
         const val EXTRA_ERROR = "error"
     }
@@ -54,6 +55,11 @@ class BoseService : Service() {
         return BoseProtocol.connect()
     }
 
+    private fun queryConnectedNames(): ArrayList<String> {
+        val connectedMacs = BoseProtocol.getConnectedDevices()
+        return ArrayList(connectedMacs.map { BoseProtocol.nameForMac(it) })
+    }
+
     private fun switchDevice(deviceName: String) {
         try {
             if (!ensureConnected()) {
@@ -71,7 +77,8 @@ class BoseService : Service() {
             val success = BoseProtocol.connectDevice(mac)
 
             if (success) {
-                broadcastStatus(deviceName, true)
+                val connected = queryConnectedNames()
+                broadcastStatus(deviceName, true, connected)
             } else {
                 broadcastError("Failed to switch to $deviceName")
             }
@@ -91,7 +98,8 @@ class BoseService : Service() {
             val activeMac = BoseProtocol.getActiveDevice()
             if (activeMac != null) {
                 val name = BoseProtocol.nameForMac(activeMac)
-                broadcastStatus(name, true)
+                val connected = queryConnectedNames()
+                broadcastStatus(name, true, connected)
             } else {
                 broadcastError("Could not get active device")
             }
@@ -101,11 +109,12 @@ class BoseService : Service() {
         }
     }
 
-    private fun broadcastStatus(activeDevice: String, success: Boolean) {
+    private fun broadcastStatus(activeDevice: String, success: Boolean, connectedDevices: ArrayList<String>? = null) {
         val intent = Intent(BROADCAST_STATUS).apply {
             setPackage(packageName)
             putExtra(EXTRA_ACTIVE_DEVICE, activeDevice)
             putExtra(EXTRA_SUCCESS, success)
+            connectedDevices?.let { putStringArrayListExtra(EXTRA_CONNECTED_DEVICES, it) }
         }
         sendBroadcast(intent)
     }

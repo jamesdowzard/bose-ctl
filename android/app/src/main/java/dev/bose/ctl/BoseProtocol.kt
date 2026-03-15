@@ -196,6 +196,27 @@ object BoseProtocol {
     }
 
     /**
+     * Get list of currently connected (active BT link) devices.
+     * Command: [0x05, 0x01, 0x01, 0x00]
+     * Response: [0x05, 0x01, 0x03, len, 0x00, flags, count, ...MACs]
+     */
+    fun getConnectedDevices(): List<ByteArray> {
+        val resp = send(byteArrayOf(0x05, 0x01, OP_GET, 0x00)) ?: return emptyList()
+        if (resp.size < 7 || resp[0] != 0x05.toByte() || resp[1] != 0x01.toByte() || resp[2] != OP_RESP) {
+            return emptyList()
+        }
+        val count = resp[6].toInt() and 0xFF
+        val devices = mutableListOf<ByteArray>()
+        for (i in 0 until count) {
+            val offset = 7 + (i * 6)
+            if (offset + 6 <= resp.size) {
+                devices.add(resp.copyOfRange(offset, offset + 6))
+            }
+        }
+        return devices
+    }
+
+    /**
      * Connect (switch source to) a device by MAC.
      * Command: [0x04, 0x02, 0x05, 0x06] + 6 MAC bytes
      * Returns: true if ACK received

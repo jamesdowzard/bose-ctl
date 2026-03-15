@@ -19,20 +19,21 @@ class BoseWidgetProvider : AppWidgetProvider() {
 
     companion object {
         private const val TAG = "BoseWidget"
-        private const val COLOR_ACTIVE = 0xFF00FF88.toInt()
-        private const val COLOR_INACTIVE = 0xFF666666.toInt()
+        private const val COLOR_ACTIVE = 0xFF00FF88.toInt()       // Green
+        private const val COLOR_CONNECTED = 0xFFFF9F43.toInt()    // Orange
+        private const val COLOR_DISCONNECTED = 0xFF333333.toInt() // Dark grey
         private const val COLOR_BG = 0xFF1A1A1A.toInt()
         private const val ACTION_WIDGET_CLICK = "dev.bose.ctl.WIDGET_CLICK"
 
         /**
-         * Update all widget instances with current active device.
+         * Update all widget instances with current active device and connected list.
          */
-        fun updateAll(context: Context, activeDevice: String?) {
+        fun updateAll(context: Context, activeDevice: String?, connectedDevices: List<String> = emptyList()) {
             val manager = AppWidgetManager.getInstance(context)
             val component = ComponentName(context, BoseWidgetProvider::class.java)
             val ids = manager.getAppWidgetIds(component)
             for (id in ids) {
-                updateWidget(context, manager, id, activeDevice)
+                updateWidget(context, manager, id, activeDevice, connectedDevices)
             }
         }
 
@@ -40,7 +41,8 @@ class BoseWidgetProvider : AppWidgetProvider() {
             context: Context,
             manager: AppWidgetManager,
             widgetId: Int,
-            activeDevice: String?
+            activeDevice: String?,
+            connectedDevices: List<String> = emptyList()
         ) {
             val views = RemoteViews(context.packageName, R.layout.widget_layout)
 
@@ -53,8 +55,12 @@ class BoseWidgetProvider : AppWidgetProvider() {
             )
 
             for ((name, viewId) in buttonIds) {
-                val isActive = name == activeDevice
-                views.setTextColor(viewId, if (isActive) COLOR_ACTIVE else COLOR_INACTIVE)
+                val color = when {
+                    name == activeDevice -> COLOR_ACTIVE
+                    name in connectedDevices -> COLOR_CONNECTED
+                    else -> COLOR_DISCONNECTED
+                }
+                views.setTextColor(viewId, color)
 
                 // Set click intent
                 val intent = Intent(context, BoseWidgetProvider::class.java).apply {
@@ -73,12 +79,13 @@ class BoseWidgetProvider : AppWidgetProvider() {
     }
 
     override fun onUpdate(context: Context, manager: AppWidgetManager, widgetIds: IntArray) {
-        // Get saved active device
+        // Get saved active device and connected list
         val prefs = context.getSharedPreferences("bose_ctl", Context.MODE_PRIVATE)
         val activeDevice = prefs.getString("active_device", null)
+        val connectedDevices = prefs.getStringSet("connected_devices", emptySet())?.toList() ?: emptyList()
 
         for (id in widgetIds) {
-            updateWidget(context, manager, id, activeDevice)
+            updateWidget(context, manager, id, activeDevice, connectedDevices)
         }
 
         // Request fresh status
@@ -106,12 +113,14 @@ class BoseWidgetProvider : AppWidgetProvider() {
                 val success = intent.getBooleanExtra(BoseService.EXTRA_SUCCESS, false)
                 if (success) {
                     val activeDevice = intent.getStringExtra(BoseService.EXTRA_ACTIVE_DEVICE)
+                    val connectedDevices = intent.getStringArrayListExtra(BoseService.EXTRA_CONNECTED_DEVICES) ?: arrayListOf()
                     // Save for widget updates
                     context.getSharedPreferences("bose_ctl", Context.MODE_PRIVATE)
                         .edit()
                         .putString("active_device", activeDevice)
+                        .putStringSet("connected_devices", connectedDevices.toSet())
                         .apply()
-                    updateAll(context, activeDevice)
+                    updateAll(context, activeDevice, connectedDevices)
                 }
             }
         }

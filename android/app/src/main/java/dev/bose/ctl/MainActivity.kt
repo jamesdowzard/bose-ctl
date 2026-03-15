@@ -30,14 +30,18 @@ class MainActivity : Activity() {
     companion object {
         private const val PERM_REQUEST = 100
         private const val COLOR_BG = 0xFF0D0D0D.toInt()
-        private const val COLOR_ACCENT = 0xFF00FF88.toInt()
+        private const val COLOR_ACCENT = 0xFF00FF88.toInt()       // Active green
+        private const val COLOR_CONNECTED = 0xFFFF9F43.toInt()    // Connected orange
+        private const val COLOR_DISCONNECTED = 0xFF333333.toInt() // Disconnected grey
         private const val COLOR_TEXT = 0xFFE0E0E0.toInt()
         private const val COLOR_DIM = 0xFF666666.toInt()
         private const val COLOR_BUTTON_BG = 0xFF1A1A1A.toInt()
         private const val COLOR_ACTIVE_BG = 0xFF002211.toInt()
+        private const val COLOR_CONNECTED_BG = 0xFF1A1408.toInt()
     }
 
     private var activeDevice: String? = null
+    private var connectedDevices: List<String> = emptyList()
     private var statusText: TextView? = null
     private val deviceButtons = mutableMapOf<String, Button>()
 
@@ -47,6 +51,7 @@ class MainActivity : Activity() {
                 val success = intent.getBooleanExtra(BoseService.EXTRA_SUCCESS, false)
                 if (success) {
                     activeDevice = intent.getStringExtra(BoseService.EXTRA_ACTIVE_DEVICE)
+                    connectedDevices = intent.getStringArrayListExtra(BoseService.EXTRA_CONNECTED_DEVICES) ?: emptyList()
                     updateUI()
                 } else {
                     val error = intent.getStringExtra(BoseService.EXTRA_ERROR)
@@ -203,12 +208,19 @@ class MainActivity : Activity() {
         statusText?.setTextColor(COLOR_ACCENT)
 
         for ((name, btn) in deviceButtons) {
-            if (name == activeDevice) {
-                btn.setTextColor(COLOR_ACCENT)
-                btn.setBackgroundColor(COLOR_ACTIVE_BG)
-            } else {
-                btn.setTextColor(COLOR_TEXT)
-                btn.setBackgroundColor(COLOR_BUTTON_BG)
+            when {
+                name == activeDevice -> {
+                    btn.setTextColor(COLOR_ACCENT)
+                    btn.setBackgroundColor(COLOR_ACTIVE_BG)
+                }
+                name in connectedDevices -> {
+                    btn.setTextColor(COLOR_CONNECTED)
+                    btn.setBackgroundColor(COLOR_CONNECTED_BG)
+                }
+                else -> {
+                    btn.setTextColor(COLOR_DISCONNECTED)
+                    btn.setBackgroundColor(COLOR_BUTTON_BG)
+                }
             }
         }
 
@@ -216,8 +228,9 @@ class MainActivity : Activity() {
         getSharedPreferences("bose_ctl", MODE_PRIVATE)
             .edit()
             .putString("active_device", activeDevice)
+            .putStringSet("connected_devices", connectedDevices.toSet())
             .apply()
-        BoseWidgetProvider.updateAll(this, activeDevice)
+        BoseWidgetProvider.updateAll(this, activeDevice, connectedDevices)
     }
 
     private fun switchDevice(name: String) {

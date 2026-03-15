@@ -25,6 +25,7 @@ class BoseTileService : TileService() {
     }
 
     private var activeDevice: String? = null
+    private var connectedDevices: ArrayList<String> = arrayListOf()
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -32,6 +33,7 @@ class BoseTileService : TileService() {
                 val success = intent.getBooleanExtra(BoseService.EXTRA_SUCCESS, false)
                 if (success) {
                     activeDevice = intent.getStringExtra(BoseService.EXTRA_ACTIVE_DEVICE)
+                    connectedDevices = intent.getStringArrayListExtra(BoseService.EXTRA_CONNECTED_DEVICES) ?: arrayListOf()
                     updateTile()
                 }
             }
@@ -64,6 +66,7 @@ class BoseTileService : TileService() {
         val intent = Intent(this, DevicePickerActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             activeDevice?.let { putExtra("current_device", it) }
+            putStringArrayListExtra("connected_devices", connectedDevices)
         }
         startActivityAndCollapse(intent)
     }

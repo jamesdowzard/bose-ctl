@@ -8,6 +8,7 @@ import android.os.Bundle
 /**
  * Transparent activity that shows a device picker dialog.
  * Used from the Quick Settings tile.
+ * Shows status dots: green = active, orange = connected, no dot = disconnected.
  */
 class DevicePickerActivity : Activity() {
 
@@ -15,9 +16,16 @@ class DevicePickerActivity : Activity() {
         super.onCreate(savedInstanceState)
 
         val currentDevice = intent.getStringExtra("current_device")
+        val connectedDevices = intent.getStringArrayListExtra("connected_devices") ?: arrayListOf()
         val deviceNames = BoseProtocol.DEVICES.keys.toTypedArray()
+
+        // Unicode circles for status dots
         val labels = deviceNames.map { name ->
-            if (name == currentDevice) "$name  (active)" else name
+            when {
+                name == currentDevice -> "\uD83D\uDFE2  $name" // green circle
+                name in connectedDevices -> "\uD83D\uDFE0  $name" // orange circle
+                else -> "\u26AB  $name" // black circle
+            }
         }.toTypedArray()
 
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog)

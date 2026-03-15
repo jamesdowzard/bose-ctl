@@ -34,6 +34,7 @@ local deviceMeta = {
 local function parseStatus(output)
   local status = {
     active = nil,
+    connected = {},
     slots = { used = 0, total = 2 },
     paired = {},
   }
@@ -42,6 +43,13 @@ local function parseStatus(output)
     local active = line:match("^Active:%s+(%S+)")
     if active then
       status.active = active
+    end
+
+    local connList = line:match("^Connected:%s+(.+)")
+    if connList then
+      for name in connList:gmatch("(%S+)%s+%b()") do
+        table.insert(status.connected, name)
+      end
     end
 
     local used, total = line:match("^Slots:%s+(%d+)/(%d+)")
@@ -67,6 +75,14 @@ local function buildDeviceListJS()
   local parts = {}
   for _, dev in ipairs(switchableDevices) do
     table.insert(parts, '"' .. dev .. '"')
+  end
+  return "[" .. table.concat(parts, ",") .. "]"
+end
+
+local function buildConnectedJS(connected)
+  local parts = {}
+  for _, name in ipairs(connected) do
+    table.insert(parts, '"' .. name:gsub('"', '\\"') .. '"')
   end
   return "[" .. table.concat(parts, ",") .. "]"
 end
@@ -137,6 +153,10 @@ local function buildHTML()
     border-color: #00ff88;
     background: #0a1f12;
   }
+  .tile.connected {
+    border-color: #ff9f43;
+    background: #1a1408;
+  }
   .tile.loading {
     opacity: 0.5;
     pointer-events: none;
@@ -155,6 +175,9 @@ local function buildHTML()
   .tile.active .tile-label {
     color: #e0e0e0;
   }
+  .tile.connected .tile-label {
+    color: #ccc;
+  }
   .tile-status {
     position: absolute;
     top: 7px;
@@ -169,6 +192,10 @@ local function buildHTML()
   .dot-active {
     background: #00ff88;
     box-shadow: 0 0 6px #00ff8866;
+  }
+  .dot-connected {
+    background: #ff9f43;
+    box-shadow: 0 0 6px #ff9f4366;
   }
   .dot-dim {
     background: #333;
@@ -219,22 +246,27 @@ local function buildHTML()
 <script>
   var DEVICES = ]] .. deviceListJS .. [[;
   var currentActive = null;
+  var currentConnected = [];
   var swapping = false;
 
-  function updateTiles(activeDevice) {
+  function updateTiles(activeDevice, connectedDevices) {
     currentActive = activeDevice;
+    currentConnected = connectedDevices || [];
     DEVICES.forEach(function(dev) {
       var tile = document.getElementById("tile-" + dev);
       var dot  = document.getElementById("status-" + dev);
       if (!tile || !dot) return;
 
-      tile.classList.remove("active", "loading");
+      tile.classList.remove("active", "connected", "loading");
       var cl = tile.querySelector(".connecting-label");
       if (cl) cl.remove();
 
       if (dev === activeDevice) {
         tile.classList.add("active");
         dot.innerHTML = '<span class="dot dot-active"></span>';
+      } else if (currentConnected.indexOf(dev) >= 0) {
+        tile.classList.add("connected");
+        dot.innerHTML = '<span class="dot dot-connected"></span>';
       } else {
         dot.innerHTML = '<span class="dot dot-dim"></span>';
       }
@@ -261,15 +293,15 @@ local function buildHTML()
   }
 
   // Called from Lua after status query completes
-  function onStatusLoaded(activeDevice) {
+  function onStatusLoaded(activeDevice, connectedDevices) {
     document.getElementById("overlay").classList.add("hidden");
-    updateTiles(activeDevice);
+    updateTiles(activeDevice, connectedDevices);
   }
 
   // Called from Lua after swap completes
-  function onSwapComplete(activeDevice) {
+  function onSwapComplete(activeDevice, connectedDevices) {
     swapping = false;
-    updateTiles(activeDevice);
+    updateTiles(activeDevice, connectedDevices);
   }
 
   // Called from Lua on error
@@ -365,13 +397,28 @@ local function handleSwap(device)
     activeTask = nil
     if exitCode == 0 then
       local swappedTo = stdout:match("Swapped to (%S+)")
-      local connected = stdout:match("OK %— (%S+) connected")
-      local newActive = swappedTo or connected or device
+      local connMatch = stdout:match("OK %— (%S+) connected")
+      local newActive = swappedTo or connMatch or device
 
       log.i("Swap complete: " .. newActive)
-      local safe = newActive:gsub("'", "\\'")
-      evalJS("onSwapComplete('" .. safe .. "')")
-      autoHideAfter(2)
+      -- After swap, re-query status to get accurate connected list
+      activeTask = runBoseCtl({ "status" }, function(exitCode2, stdout2, stderr2)
+        activeTask = nil
+        if exitCode2 == 0 then
+          local st = parseStatus(stdout2)
+          local active = st.active or newActive
+          local connJS = buildConnectedJS(st.connected)
+          if active == "mac" then
+            evalJS("onSwapComplete(null, " .. connJS .. ")")
+          else
+            evalJS("onSwapComplete('" .. active:gsub("'", "\\'") .. "', " .. connJS .. ")")
+          end
+        else
+          local safe = newActive:gsub("'", "\\'")
+          evalJS("onSwapComplete('" .. safe .. "', [])")
+        end
+        autoHideAfter(2)
+      end)
     else
       local err = stdout:match("Error: (.+)") or stderr:match("Error: (.+)") or "unknown error"
       log.w("Swap failed: " .. err)
@@ -448,10 +495,11 @@ local function showPanel()
     if exitCode == 0 then
       local status = parseStatus(stdout)
       local active = status.active or "none"
+      local connJS = buildConnectedJS(status.connected)
       if active == "mac" then
-        evalJS("onStatusLoaded(null)")
+        evalJS("onStatusLoaded(null, " .. connJS .. ")")
       else
-        evalJS("onStatusLoaded('" .. active:gsub("'", "\\'") .. "')")
+        evalJS("onStatusLoaded('" .. active:gsub("'", "\\'") .. "', " .. connJS .. ")")
       end
     else
       log.w("Status query failed: " .. (stderr or ""))
