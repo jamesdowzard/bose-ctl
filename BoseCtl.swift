@@ -1,227 +1,325 @@
 /// bose-ctl: CLI for Bose QC Ultra headphone control
-/// All commands go through bosed daemon (Unix socket → phone → RFCOMM).
-/// No direct RFCOMM — phone is the sole controller.
+/// Direct RFCOMM — Mac opens channel 8 independently, no daemon needed.
 
 import Foundation
 
-let DAEMON_SOCKET = "/tmp/bosed.sock"
+let bose = BoseRFCOMM()
 
-// Known device names
-let knownDevices: [String: String] = [
-    "mac":    "BC:D0:74:11:DB:27",
-    "phone":  "A8:76:50:D3:B1:1B",
-    "ipad":   "F4:81:C4:B5:FA:AB",
-    "iphone": "F8:4D:89:C4:B6:ED",
-    "tv":     "14:C1:4E:B7:CB:68",
-]
+let MAC_BOSE = "E4:58:BC:C0:2F:72"
 
-// === Daemon Client ===
+// === Blueutil (Mac BT audio profile) ===
 
-func daemonRequest(_ json: [String: Any], timeout: Int = 10) -> [String: Any]? {
-    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard fd >= 0 else { return nil }
-    defer { close(fd) }
-
-    var addr = sockaddr_un()
-    addr.sun_family = sa_family_t(AF_UNIX)
-    withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
-        DAEMON_SOCKET.withCString { cstr in
-            ptr.withMemoryRebound(to: CChar.self, capacity: 104) { dest in
-                _ = strcpy(dest, cstr)
-            }
-        }
+@discardableResult
+func runBlueutil(_ args: [String]) -> (Int32, String) {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/blueutil")
+    proc.arguments = args
+    let pipe = Pipe()
+    proc.standardOutput = pipe
+    proc.standardError = pipe
+    do {
+        try proc.run()
+        proc.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return (proc.terminationStatus, output)
+    } catch {
+        return (1, "")
     }
-
-    let connectResult = withUnsafePointer(to: &addr) { ptr in
-        ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-            Foundation.connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
-        }
-    }
-    guard connectResult == 0 else { return nil }
-
-    var tv = timeval(tv_sec: timeout, tv_usec: 0)
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-
-    guard let requestData = try? JSONSerialization.data(withJSONObject: json),
-          let requestStr = String(data: requestData, encoding: .utf8) else { return nil }
-
-    let sent = requestStr.withCString { ptr in write(fd, ptr, requestStr.utf8.count) }
-    guard sent > 0 else { return nil }
-
-    var buffer = [UInt8](repeating: 0, count: 8192)
-    let bytesRead = read(fd, &buffer, buffer.count)
-    guard bytesRead > 0 else { return nil }
-
-    let responseStr = String(bytes: buffer[0..<bytesRead], encoding: .utf8) ?? ""
-    guard let respData = responseStr.data(using: .utf8),
-          let parsed = try? JSONSerialization.jsonObject(with: respData) as? [String: Any] else { return nil }
-
-    return parsed
 }
 
-func runCommand(_ cmd: String, _ args: [String]) {
-    var request: [String: Any]
-    var timeout = 10
+// === Helpers ===
 
-    switch cmd {
-    case "status", "s":
-        request = ["cmd": "status"]
-    case "connect", "c":
-        guard args.count >= 3 else { print("Usage: bose-ctl connect <device>"); exit(1) }
-        request = ["cmd": "connect", "device": args[2]]
-        timeout = 15
-    case "disconnect", "d":
-        guard args.count >= 3 else { print("Usage: bose-ctl disconnect <device>"); exit(1) }
-        request = ["cmd": "disconnect", "device": args[2]]
-    case "swap":
-        guard args.count >= 3 else { print("Usage: bose-ctl swap <device>"); exit(1) }
-        request = ["cmd": "swap", "device": args[2]]
-        timeout = 15
-    case "battery", "b":
-        request = ["cmd": "battery"]
-    case "devices":
-        request = ["cmd": "devices"]
-        timeout = 15
-    case "anc":
-        if args.count >= 3 {
-            request = ["cmd": "anc", "mode": args[2]]
-        } else {
-            request = ["cmd": "anc"]
+func fail(_ message: String) -> Never {
+    print("Error: \(message)")
+    exit(1)
+}
+
+func macForName(_ name: String) -> [UInt8] {
+    guard let mac = bose.macForName(name) else {
+        fail("unknown device: \(name)")
+    }
+    return mac
+}
+
+func nameForMac(_ mac: [UInt8]) -> String {
+    return bose.nameForMac(mac)
+}
+
+func isMacDevice(_ mac: [UInt8]) -> Bool {
+    return bose.macToString(mac) == "BC:D0:74:11:DB:27"
+}
+
+func isPhoneDevice(_ mac: [UInt8]) -> Bool {
+    return bose.macToString(mac) == "A8:76:50:D3:B1:1B"
+}
+
+// === Commands ===
+
+func cmdStatus() {
+    // Single RFCOMM session for all queries
+    do {
+        try bose.withRFCOMM { channel in
+            // Connected devices (ground truth)
+            let connResp = bose.sendBMAP(channel, bytes: [0x05, 0x01, OP_GET, 0x00])
+            var connectedMacs: [[UInt8]] = []
+            if let cr = connResp, cr.count >= 7,
+               cr[0] == 0x05, cr[1] == 0x01, cr[2] == OP_RESP {
+                let count = Int(cr[6])
+                for i in 0..<count {
+                    let offset = 7 + (i * 6)
+                    guard offset + 6 <= cr.count else { break }
+                    connectedMacs.append(Array(cr[offset..<(offset + 6)]))
+                }
+            }
+
+            // Active device
+            var activeDeviceName: String? = nil
+            let activeResp = bose.sendBMAP(channel, bytes: [0x04, 0x09, OP_GET, 0x00])
+            if let ar = activeResp, ar.count >= 10, ar[2] == OP_RESP {
+                let activeMac = Array(ar[4..<10])
+                activeDeviceName = nameForMac(activeMac)
+            }
+
+            // Connected device names
+            let connectedNames = connectedMacs.map { nameForMac($0) }
+
+            // Slots
+            let slot1 = connectedNames.count >= 1 ? connectedNames[0] : "—"
+            let slot2 = connectedNames.count >= 2 ? connectedNames[1] : "—"
+
+            if let active = activeDeviceName {
+                print("Active:   \(active)")
+            }
+            if !connectedNames.isEmpty {
+                print("Connected: \(connectedNames.joined(separator: ", "))")
+            }
+            print("Slots:    \(slot1) | \(slot2)")
+
+            // Battery
+            if let battResp = bose.sendBMAP(channel, bytes: [0x02, 0x02, OP_GET, 0x00]),
+               battResp.count >= 5, battResp[2] == OP_RESP {
+                let level = min(100, max(0, Int(battResp[4])))
+                let charging = battResp.count >= 8 ? battResp[7] != 0 : false
+                print("Battery:  \(level)%\(charging ? " ⚡" : "")")
+            }
+
+            // ANC
+            if let ancResp = bose.sendBMAP(channel, bytes: [0x1F, 0x03, OP_GET, 0x00]),
+               ancResp.count >= 5, ancResp[2] == OP_RESP {
+                let mode: String
+                switch ancResp[4] {
+                case 0: mode = "quiet"
+                case 1: mode = "aware"
+                case 2: mode = "custom1"
+                case 3: mode = "custom2"
+                default: mode = "unknown(\(ancResp[4]))"
+                }
+                print("ANC:      \(mode)")
+            }
+
+            // Firmware
+            if let fwResp = bose.sendBMAP(channel, bytes: [0x00, 0x05, OP_GET, 0x00]),
+               fwResp.count >= 5, fwResp[2] == OP_RESP {
+                let fwBytes = Array(fwResp[4...])
+                if let fw = String(bytes: fwBytes, encoding: .utf8)?
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\0")), !fw.isEmpty {
+                    print("Firmware: \(fw)")
+                }
+            }
         }
-    case "reconnect":
-        request = ["cmd": "reconnect"]
-        timeout = 15
-    case "raw":
-        guard args.count >= 3 else { print("Usage: bose-ctl raw <hex>"); exit(1) }
-        request = ["cmd": "raw", "hex": args[2]]
-    default:
-        print("Unknown command: \(cmd)")
-        exit(1)
+    } catch {
+        fail("headphones not reachable")
+    }
+}
+
+func cmdBattery() {
+    guard let result = bose.getBattery() else {
+        fail("headphones not reachable")
+    }
+    print("\(result.level)%\(result.charging ? " ⚡" : "")")
+}
+
+func cmdAnc(_ mode: String?) {
+    if let mode = mode {
+        if !bose.setAncMode(mode) {
+            fail("failed to set ANC mode")
+        }
+        // Read back to confirm
+        if let current = bose.getAncMode() {
+            print("ANC: \(current)")
+        } else {
+            print("ANC: \(mode)")
+        }
+    } else {
+        guard let current = bose.getAncMode() else {
+            fail("headphones not reachable")
+        }
+        print("ANC: \(current)")
+    }
+}
+
+func cmdDevices() {
+    guard let devices = bose.getAllDeviceInfo() else {
+        fail("headphones not reachable")
+    }
+    for d in devices {
+        let state = d.info.primary ? "●" : (d.info.connected ? "○" : "·")
+        let devName = d.info.name
+        print("  \(state) \(d.name)\(devName.isEmpty ? "" : " (\(devName))")")
+    }
+}
+
+func cmdConnect(_ deviceName: String) {
+    let mac = macForName(deviceName)
+
+    // If connecting Mac, also connect Mac BT stack for A2DP
+    if isMacDevice(mac) {
+        runBlueutil(["--connect", MAC_BOSE])
+        Thread.sleep(forTimeInterval: 1.5)
     }
 
-    guard let response = daemonRequest(request, timeout: timeout) else {
-        print("Error: bosed daemon not running. Start it with: launchctl load ~/Library/LaunchAgents/com.jamesdowzard.bosed.plist")
-        exit(1)
+    if !bose.connectDevice(mac) {
+        fail("failed to connect \(deviceName)")
+    }
+    print("Switched to \(deviceName)")
+}
+
+func cmdDisconnect(_ deviceName: String) {
+    let mac = macForName(deviceName)
+
+    if !bose.disconnectDevice(mac) {
+        fail("failed to disconnect \(deviceName)")
     }
 
-    guard let ok = response["ok"] as? Bool else {
-        print("Error: invalid response")
-        exit(1)
+    // If disconnecting Mac, also disconnect Mac BT stack
+    if isMacDevice(mac) {
+        runBlueutil(["--disconnect", MAC_BOSE])
     }
 
-    if !ok {
-        let error = response["error"] as? String ?? "unknown error"
-        print("Error: \(error)")
-        exit(1)
+    print("Disconnected \(deviceName)")
+}
+
+func cmdSwap(_ targetName: String) {
+    let targetMac = macForName(targetName)
+
+    // Get connected devices
+    let connectedMacs = bose.getConnectedDevices()
+
+    // Disconnect all others (except phone — RFCOMM controller on Android)
+    for connMac in connectedMacs {
+        if connMac == targetMac { continue }
+        if isPhoneDevice(connMac) { continue }
+
+        // If leaving Mac, blueutil disconnect
+        if isMacDevice(connMac) {
+            runBlueutil(["--disconnect", MAC_BOSE])
+        }
+
+        _ = bose.disconnectDevice(connMac)
     }
 
-    guard let data = response["data"] as? [String: Any] else {
-        print("OK")
+    // If target is Mac, blueutil connect + wait
+    if isMacDevice(targetMac) {
+        runBlueutil(["--connect", MAC_BOSE])
+        Thread.sleep(forTimeInterval: 1.5)
+    }
+
+    // Connect target
+    if !bose.connectDevice(targetMac) {
+        fail("failed to swap to \(targetName)")
+    }
+
+    print("Swapped to \(targetName)")
+}
+
+func cmdRaw(_ hex: String) {
+    // Parse hex string to bytes
+    let clean = hex.replacingOccurrences(of: " ", with: "")
+        .replacingOccurrences(of: ",", with: "")
+        .replacingOccurrences(of: "0x", with: "")
+    var bytes: [UInt8] = []
+    var i = clean.startIndex
+    while i < clean.endIndex {
+        guard let next = clean.index(i, offsetBy: 2, limitedBy: clean.endIndex) else { break }
+        let byteStr = String(clean[i..<next])
+        guard let byte = UInt8(byteStr, radix: 16) else {
+            fail("invalid hex: \(byteStr)")
+        }
+        bytes.append(byte)
+        i = next
+    }
+
+    guard !bytes.isEmpty else { fail("no bytes to send") }
+
+    guard let resp = bose.sendRaw(bytes) else {
+        print("No response")
         return
     }
 
-    // Format output
-    switch cmd {
-    case "status", "s":
-        let connected = data["rfcomm_connected"] as? Bool ?? false
-        if !connected {
-            print("RFCOMM: disconnected")
-            return
-        }
-        if let active = data["active_device"] as? String {
-            print("Active:   \(active)")
-        }
-        if let devices = data["connected_devices"] as? [String] {
-            print("Connected: \(devices.joined(separator: ", "))")
-        }
-        if let s1 = data["slot1"] as? String {
-            let s2 = data["slot2"] as? String ?? "—"
-            print("Slots:    \(s1) | \(s2)")
-        }
-        if let bat = data["battery_level"] as? Int {
-            let charging = data["battery_charging"] as? Bool ?? false
-            print("Battery:  \(bat)%\(charging ? " ⚡" : "")")
-        }
-        if let anc = data["anc_mode"] as? String {
-            print("ANC:      \(anc)")
-        }
-        if let fw = data["firmware"] as? String {
-            print("Firmware: \(fw)")
-        }
+    let hexStr = resp.map { String(format: "%02x", $0) }.joined()
+    print("Response (\(resp.count) bytes): \(hexStr)")
 
-    case "connect", "c":
-        let device = data["device"] as? String ?? "?"
-        print("Switched to \(device)")
-
-    case "disconnect", "d":
-        let device = data["device"] as? String ?? "?"
-        print("Disconnected \(device)")
-
-    case "swap":
-        let device = data["device"] as? String ?? "?"
-        print("Swapped to \(device)")
-
-    case "battery", "b":
-        let level = data["level"] as? Int ?? 0
-        let charging = data["charging"] as? Bool ?? false
-        print("\(level)%\(charging ? " ⚡" : "")")
-
-    case "devices":
-        if let devices = data["devices"] as? [[String: Any]] {
-            for d in devices {
-                let name = d["name"] as? String ?? "?"
-                let devName = d["device_name"] as? String ?? ""
-                let connected = d["connected"] as? Bool ?? false
-                let primary = d["primary"] as? Bool ?? false
-                let state = primary ? "●" : (connected ? "○" : "·")
-                print("  \(state) \(name)\(devName.isEmpty ? "" : " (\(devName))")")
-            }
-        }
-
-    case "anc":
-        let mode = data["mode"] as? String ?? "?"
-        print("ANC: \(mode)")
-
-    case "reconnect":
-        let connected = data["connected"] as? Bool ?? false
-        print(connected ? "Connected" : "Failed to connect")
-
-    case "raw":
-        if let hex = data["hex"] as? String, let length = data["length"] as? Int {
-            print("Response (\(length) bytes): \(hex)")
-            if let ascii = data["ascii"] as? String, !ascii.isEmpty {
-                print("ASCII: \(ascii)")
-            }
-        } else {
-            print("No response")
-        }
-
-    default:
-        break
+    // Try ASCII interpretation
+    let asciiBytes = resp.count > 4 ? Array(resp[4...]) : resp
+    if let ascii = String(bytes: asciiBytes, encoding: .utf8)?
+        .trimmingCharacters(in: CharacterSet(charactersIn: "\0")),
+       !ascii.isEmpty, ascii.allSatisfy({ $0.isASCII && ($0.isPunctuation || $0.isLetter || $0.isNumber || $0 == "." || $0 == "+" || $0 == "-" || $0 == "_") }) {
+        print("ASCII: \(ascii)")
     }
 }
 
 // === Main ===
-let args = CommandLine.arguments
-guard args.count >= 2 else {
-    print("""
-    bose-ctl — Bose QC Ultra 2 control (via bosed daemon)
 
-    Usage:
-      bose-ctl status              Connection status, battery, ANC
-      bose-ctl connect <device>    Switch audio to device
-      bose-ctl disconnect <device> Disconnect device
-      bose-ctl swap <device>       Disconnect others, switch to device
-      bose-ctl battery             Battery level
-      bose-ctl devices             All devices with connection state
-      bose-ctl anc [mode]          Get/set ANC (quiet/aware/custom1/custom2)
-      bose-ctl reconnect           Reconnect RFCOMM
-      bose-ctl raw <hex>           Send raw BMAP bytes
+@main
+struct BoseCtlApp {
+    static func main() {
+        let args = CommandLine.arguments
+        guard args.count >= 2 else {
+            print("""
+            bose-ctl — Bose QC Ultra 2 control (direct RFCOMM)
 
-    Devices: \(knownDevices.keys.sorted().joined(separator: ", "))
-    """)
-    exit(0)
+            Usage:
+              bose-ctl status              Connection status, battery, ANC
+              bose-ctl connect <device>    Switch audio to device
+              bose-ctl disconnect <device> Disconnect device
+              bose-ctl swap <device>       Disconnect others, switch to device
+              bose-ctl battery             Battery level
+              bose-ctl devices             All devices with connection state
+              bose-ctl anc [mode]          Get/set ANC (quiet/aware/custom1/custom2)
+              bose-ctl raw <hex>           Send raw BMAP bytes
+
+            Devices: \(boseKnownDevices.map { $0.name }.joined(separator: ", "))
+            """)
+            exit(0)
+        }
+
+        let cmd = args[1].lowercased()
+
+        switch cmd {
+        case "status", "s":
+            cmdStatus()
+        case "battery", "b":
+            cmdBattery()
+        case "anc":
+            cmdAnc(args.count >= 3 ? args[2] : nil)
+        case "devices":
+            cmdDevices()
+        case "connect", "c":
+            guard args.count >= 3 else { print("Usage: bose-ctl connect <device>"); exit(1) }
+            cmdConnect(args[2].lowercased())
+        case "disconnect", "d":
+            guard args.count >= 3 else { print("Usage: bose-ctl disconnect <device>"); exit(1) }
+            cmdDisconnect(args[2].lowercased())
+        case "swap":
+            guard args.count >= 3 else { print("Usage: bose-ctl swap <device>"); exit(1) }
+            cmdSwap(args[2].lowercased())
+        case "raw":
+            guard args.count >= 3 else { print("Usage: bose-ctl raw <hex>"); exit(1) }
+            cmdRaw(args[2])
+        default:
+            print("Unknown command: \(cmd)")
+            exit(1)
+        }
+    }
 }
-
-runCommand(args[1].lowercased(), args)
