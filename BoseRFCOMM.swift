@@ -8,11 +8,12 @@
 
 import Foundation
 import IOBluetooth
+import CoreBluetooth
 
 // MARK: - Constants
 
-let BOSE_MAC = "E4:58:BC:C0:2F:72"
-let RFCOMM_CHANNEL: BluetoothRFCOMMChannelID = 8
+let BOSE_MAC = "E4-58-BC-C0-2F-72"  // IOBluetooth uses dash-separated format
+let RFCOMM_CHANNEL: BluetoothRFCOMMChannelID = 2  // SPPS De service (BMAP) — resolved via SDP
 
 // BMAP operators
 let OP_GET:   UInt8 = 0x01
@@ -97,9 +98,37 @@ class RFCOMMDelegate: NSObject, IOBluetoothRFCOMMChannelDelegate {
 /// On-demand pattern: each command opens RFCOMM channel 8, sends BMAP bytes,
 /// reads the response, then closes. No persistent connection. This allows
 /// both Mac and phone to independently control the headphones.
+/// Waits for CoreBluetooth central manager to reach poweredOn state.
+/// Short-lived CLI processes need this before IOBluetooth RFCOMM calls will succeed.
+private class BTReadyWaiter: NSObject, CBCentralManagerDelegate {
+    private var central: CBCentralManager!
+    private(set) var ready = false
+
+    func waitForReady(timeout: TimeInterval = 5.0) {
+        central = CBCentralManager(delegate: self, queue: nil)
+        let deadline = Date().addingTimeInterval(timeout)
+        while !ready && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+    }
+
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        if central.state == .poweredOn {
+            ready = true
+        }
+    }
+}
+
 class BoseRFCOMM {
 
     private let delegate = RFCOMMDelegate()
+
+    init() {
+        // Wait for CoreBluetooth to reach poweredOn state — required for
+        // IOBluetooth RFCOMM in short-lived CLI processes.
+        let waiter = BTReadyWaiter()
+        waiter.waitForReady()
+    }
 
     // MARK: - Core RFCOMM
 
@@ -111,12 +140,21 @@ class BoseRFCOMM {
             throw BoseError.deviceNotFound
         }
 
+        // Retry RFCOMM open — CoreBluetooth may need a moment after poweredOn
         var channel: IOBluetoothRFCOMMChannel?
-        let status = device.openRFCOMMChannelSync(
-            &channel,
-            withChannelID: RFCOMM_CHANNEL,
-            delegate: delegate
-        )
+        var status: IOReturn = kIOReturnError
+        for attempt in 1...3 {
+            status = device.openRFCOMMChannelSync(
+                &channel,
+                withChannelID: RFCOMM_CHANNEL,
+                delegate: delegate
+            )
+            if status == kIOReturnSuccess && channel != nil { break }
+            if attempt < 3 {
+                Thread.sleep(forTimeInterval: 1.0)
+                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            }
+        }
         guard status == kIOReturnSuccess, let ch = channel else {
             throw BoseError.connectionFailed(status)
         }
