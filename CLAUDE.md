@@ -4,38 +4,55 @@
 **Protocol:** BMAP over RFCOMM via SPP UUID (`00001101-0000-1000-8000-00805f9b34fb`)
 **Note:** deca-fade UUID is Apple iAP2, NOT BMAP — don't use it
 
-## Architecture (Phone-Centric)
+## Architecture (Independent Control)
 
-Phone is the sole RFCOMM owner. Mac daemon relays over Tailscale.
-bosed maintains persistent subscribe channel — phone pushes bt_connect/bt_disconnect to control Mac BT.
+Both Mac and phone control headphones independently via on-demand RFCOMM.
+No persistent connections. No coordination. No Tailscale dependency.
 
 ```
-bose-ctl / Hammerspoon (Mac)
-  → bosed (/tmp/bosed.sock) — daemon-only, no direct RFCOMM
-    → Phone BoseService (Tailscale 100.97.121.67:8899)
-      → Bose headphones (RFCOMM via SPP)
+Mac:   bose-ctl → IOBluetooth RFCOMM → Headphones (direct)
+Phone: BoseService → Android RFCOMM → Headphones (direct)
 ```
+
+Each command: open RFCOMM channel 8, send BMAP, read response, close (~200-300ms).
+Both devices can send commands at any time — SPP is single-connection, so if both try
+simultaneously one waits, but in practice commands are too brief to collide.
+
+bosed daemon watches for brief BT audio disconnects and auto-reconnects via blueutil
+(30-second window, then stops trying).
 
 ## Components
 
-- `BoseCtl.swift` — CLI (daemon-only, no RFCOMM fallback)
-- `BoseDaemon.swift` — Smart relay with subscribe channel for push commands
-- `hammerspoon/bose.lua` — ⌥B floating webview bar
+- `BoseRFCOMM.swift` — Direct RFCOMM BMAP protocol (IOBluetooth, on-demand)
+- `BoseCtl.swift` — CLI using BoseRFCOMM directly (no daemon dependency)
+- `BoseDaemon.swift` — Auto-reconnect watcher (blueutil poll, 3s interval, 30s window)
+- `hammerspoon/bose.lua` — ⌥B floating webview bar (calls bose-ctl)
+- `raycast/bose-toggle.sh` — Raycast one-tap connect/disconnect
 - LaunchAgent: `~/Library/LaunchAgents/com.jamesdowzard.bosed.plist`
 
-Android controller: `~/code/personal/s21/app-automation` (package: au.com.jd.automation)
+Android: `~/code/personal/s21/app-automation` (package: au.com.jd.automation.bose)
+
+## Build
+
+```bash
+# bose-ctl (needs IOBluetooth)
+swiftc -O BoseRFCOMM.swift BoseCtl.swift -framework IOBluetooth -o ~/bin/bose-ctl
+
+# bosed (blueutil only)
+swiftc -O BoseDaemon.swift -o ~/bin/bosed
+```
 
 ## Device Map
 
 | Name | MAC | Notes |
 |------|-----|-------|
 | mac | BC:D0:74:11:DB:27 | MacBook |
-| phone | A8:76:50:D3:B1:1B | Samsung S21 (RFCOMM owner) |
+| phone | A8:76:50:D3:B1:1B | Samsung S21 |
 | ipad | F4:81:C4:B5:FA:AB | Currently needs re-pairing |
 | iphone | F8:4D:89:C4:B6:ED | |
 | tv | 14:C1:4E:B7:CB:68 | Chromecast |
 
-## Correct BMAP Function IDs (Block 0x04 — DeviceManagement)
+## BMAP Function IDs (Block 0x04 — DeviceManagement)
 
 | Function | ID | Notes |
 |----------|-----|-------|
@@ -54,7 +71,7 @@ Android controller: `~/code/personal/s21/app-automation` (package: au.com.jd.aut
 - Firmware: `00,05,01,00`
 - Product name: `00,0F,01,00`
 
-## TCP Commands (port 8899)
+## TCP Commands (phone port 8899)
 
 status, connect, disconnect, swap, battery, devices, anc, pair, reconnect, pause, resume, raw
 
@@ -62,8 +79,9 @@ status, connect, disconnect, swap, battery, devices, anc, pair, reconnect, pause
 
 - **NEVER unpair/toggle BT/pairing mode without explicit user approval** — broke pairings on 2026-03-16
 - **Verify state changes with the user**, not just the protocol response
-- **Never disconnect the phone** — it's the RFCOMM controller
 - **Bose Music app must be disabled** — fights for RFCOMM: `adb shell pm disable-user com.bose.bosemusic`
 - 2-device multipoint limit
 - getDeviceInfo status byte unreliable — use getConnectedDevices() as ground truth
+- Single RFCOMM attempt per command — no retry loops
+- Drain 300ms of initial data after RFCOMM connect (Bose firmware quirk)
 - Use pymobiledevice3 for iPad BT operations
