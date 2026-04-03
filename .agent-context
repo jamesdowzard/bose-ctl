@@ -2,8 +2,8 @@
 # Max 20 lines. Updated by agent on Stop hook.
 
 ## Feature
-Add heartbeat to subscribe channel
-Add heartbeat to subscribe channel
+Replace phone-relay architecture with direct Mac RFCOMM
+Replace phone-relay architecture with direct Mac RFCOMM
 
 ## Current State
 Not started. No work has been done yet.
