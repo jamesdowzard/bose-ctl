@@ -1,4 +1,4 @@
-package dev.bose.ctl
+package au.com.jd.bose
 
 import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
@@ -47,20 +47,16 @@ class BoseTileService : TileService() {
         } else {
             registerReceiver(statusReceiver, filter)
         }
-        // Refresh status when tile becomes visible
         refreshStatus()
     }
 
     override fun onStopListening() {
-        try {
-            unregisterReceiver(statusReceiver)
-        } catch (_: Exception) {}
+        try { unregisterReceiver(statusReceiver) } catch (_: Exception) {}
         super.onStopListening()
     }
 
     override fun onClick() {
         super.onClick()
-        // Open device picker dialog
         val intent = Intent(this, DevicePickerActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             activeDevice?.let { putExtra("current_device", it) }
@@ -72,7 +68,11 @@ class BoseTileService : TileService() {
         val intent = Intent(this, BoseService::class.java).apply {
             action = BoseService.ACTION_REFRESH
         }
-        startService(intent)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
     }
 
     private fun updateTile() {

@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-permission android:name="android.permission.BLUETOOTH" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:allowBackup="false"
@@ -12,7 +13,7 @@
         android:icon="@drawable/ic_launcher"
         android:theme="@style/AppTheme">
 
-        <!-- Main activity for permission granting and manual control -->
+        <!-- Main activity (Jetpack Compose) -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -22,6 +23,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Foreground service with A2DP auto-accept -->
+        <service
+            android:name=".BoseService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <!-- Quick Settings Tile -->
         <service
@@ -47,18 +54,22 @@
                 android:resource="@xml/widget_info" />
         </receiver>
 
-        <!-- Background Bluetooth service -->
-        <service
-            android:name=".BoseService"
-            android:exported="false" />
-
-        <!-- Device picker dialog -->
+        <!-- Device picker dialog (from Quick Settings tile) -->
         <activity
             android:name=".DevicePickerActivity"
             android:exported="false"
             android:theme="@style/DialogTheme"
             android:excludeFromRecents="true"
             android:taskAffinity="" />
+
+        <!-- Boot receiver for auto-start -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 
