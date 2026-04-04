@@ -1,293 +1,238 @@
--- Bose QC Ultra Controller
--- Hammerspoon module for quick device switching via popup chooser
---
--- Keybinding: Ctrl+Alt+B (alt+b taken by Bowser)
--- Requires: bose-ctl binary at ~/bin/bose-ctl
+-- Bose QC Ultra 2 Controller
+-- ⌥B: Floating pill bar for device switching
+-- 1-5 or click to switch, Escape to close
+-- Requires: ~/bin/bose-ctl
 
 local M = {}
-local log = hs.logger.new("bose-ctl", "info")
+local log = hs.logger.new("bose", "info")
 
--- Configuration
 M.boseCtl = os.getenv("HOME") .. "/bin/bose-ctl"
 M.hotkey = nil
-M.chooser = nil
 
--- Known devices (must match BoseCtl.swift knownDevices)
-local devices = { "mac", "phone", "ipad", "iphone", "tv" }
+-- State
+local pill = nil
+local keyTap = nil
+local clickTap = nil
+local autoClose = nil
+local busy = false
 
--- Icons for display
-local icons = {
-  mac = "💻",
-  phone = "📱",
-  ipad = "📱",
-  iphone = "📱",
-  tv = "📺",
+-- Devices
+local devices = {
+  { name = "mac",    label = "Mac"    },
+  { name = "phone",  label = "Phone"  },
+  { name = "ipad",   label = "iPad"   },
+  { name = "iphone", label = "iPhone" },
+  { name = "tv",     label = "TV"     },
 }
 
--- State from last status query
-local lastStatus = nil
+-- Layout
+local W, H = 420, 40
+local R = 20
 
 -- =============================================================================
--- Status parsing
+-- Async bose-ctl
 -- =============================================================================
 
--- Parse bose-ctl status output into structured data
--- Example output:
---   Active:   mac (BC:D0:74:11:DB:27)
---   Slots:    1/2 connected
---   Paired:   4 devices
---     1. mac (BC:D0:74:11:DB:27)
---     2. ipad (F4:81:C4:B5:FA:AB)
---     ...
-local function parseStatus(output)
-  local status = {
-    active = nil,
-    slots = { used = 0, total = 2 },
-    paired = {},
-  }
-
-  for line in output:gmatch("[^\r\n]+") do
-    -- Active device
-    local active = line:match("^Active:%s+(%S+)")
-    if active then
-      status.active = active
-    end
-
-    -- Slot count
-    local used, total = line:match("^Slots:%s+(%d+)/(%d+)")
-    if used then
-      status.slots.used = tonumber(used)
-      status.slots.total = tonumber(total)
-    end
-
-    -- Paired device list entries
-    local idx, name = line:match("^%s+(%d+)%.%s+(%S+)")
-    if idx and name then
-      table.insert(status.paired, name)
-    end
-  end
-
-  return status
-end
-
--- Check if a device is connected by checking if it appears in paired list
--- and comparing with active device
-local function isConnected(deviceName, status)
-  if not status then return false end
-  -- If the device is the active device, it's connected
-  if status.active == deviceName then return true end
-  -- We can't distinguish "paired but disconnected" from "paired and connected
-  -- in second slot" without more protocol info, so we just show active status
-  return false
-end
-
--- =============================================================================
--- Chooser items
--- =============================================================================
-
-local function buildChooserItems(status)
-  local items = {}
-
-  if not status then
-    table.insert(items, {
-      text = "Headphones not connected",
-      subText = "Make sure Bose QC Ultra are connected to Mac",
-      action = "none",
-    })
-    return items
-  end
-
-  -- Header: current state
-  local activeText = status.active and (status.active) or "none"
-  table.insert(items, {
-    text = "Active: " .. activeText,
-    subText = status.slots.used .. "/" .. status.slots.total .. " slots in use",
-    action = "none",
-  })
-
-  -- Swap options for non-mac devices
-  for _, dev in ipairs(devices) do
-    if dev ~= "mac" then
-      local icon = icons[dev] or "🎧"
-      local isActive = (status.active == dev)
-
-      if isActive then
-        table.insert(items, {
-          text = icon .. "  " .. dev .. "  —  active",
-          subText = "Select to disconnect",
-          action = "disconnect",
-          device = dev,
-        })
-      else
-        table.insert(items, {
-          text = icon .. "  Swap to " .. dev,
-          subText = "Disconnect other devices and connect " .. dev,
-          action = "swap",
-          device = dev,
-        })
-      end
-    end
-  end
-
-  -- Show status refresh option
-  table.insert(items, {
-    text = "🔄  Refresh status",
-    subText = "Query headphones for current state",
-    action = "refresh",
-  })
-
-  return items
-end
-
--- =============================================================================
--- Command execution (async via hs.task)
--- =============================================================================
+local seq = 0
 
 local function runBoseCtl(args, callback)
-  local task = hs.task.new(M.boseCtl, function(exitCode, stdout, stderr)
-    if callback then
-      callback(exitCode, stdout, stderr)
+  seq = seq + 1
+  local tag = tostring(seq)
+  local outFile  = "/tmp/bose-r-" .. tag
+  local doneFile = "/tmp/bose-d-" .. tag
+  os.remove(outFile)
+  os.remove(doneFile)
+
+  local cmd = M.boseCtl .. " " .. table.concat(args, " ")
+    .. " > " .. outFile .. " 2>&1; echo $? >> " .. outFile .. "; touch " .. doneFile
+  hs.task.new("/bin/sh", function() end, {"-c", cmd}):start()
+
+  hs.timer.doEvery(0.3, function(timer)
+    local f = io.open(doneFile, "r")
+    if f then
+      f:close()
+      os.remove(doneFile)
+      local of = io.open(outFile, "r")
+      local content = of and of:read("*a") or ""
+      if of then of:close() end
+      os.remove(outFile)
+      local lines = {}
+      for line in content:gmatch("[^\n]+") do table.insert(lines, line) end
+      local rc = tonumber(lines[#lines]) or 1
+      table.remove(lines)
+      timer:stop()
+      callback(rc, table.concat(lines, "\n") .. "\n")
     end
-  end, args)
+  end)
+end
 
-  if not task then
-    log.e("Failed to create task for bose-ctl")
-    if callback then callback(-1, "", "Failed to create task") end
-    return
+local function parseStatus(output)
+  local active, battery, connected = nil, nil, {}
+  for line in output:gmatch("[^\r\n]+") do
+    local a = line:match("^Active:%s+(%S+)")
+    if a then active = a end
+    local b = line:match("^Battery:%s+(%d+)%%")
+    if b then battery = tonumber(b) end
+    local cl = line:match("^Connected:%s+(.+)")
+    if cl then
+      for name in cl:gmatch("(%w+)") do connected[name] = true end
+    end
   end
-
-  task:start()
-  return task
+  return active, battery, connected
 end
 
 -- =============================================================================
--- Actions
+-- Pill rendering
 -- =============================================================================
 
-local function showWorking(message)
-  hs.alert.closeAll()
-  hs.alert.show("🎧 " .. message, nil, nil, 10)
+local function buildPill(active, battery, connected)
+  local screen = hs.screen.mainScreen()
+  local f = screen:frame()
+  local x = f.x + (f.w - W) / 2
+  local y = f.y + 60
+
+  local c = hs.canvas.new({x = x, y = y, w = W, h = H})
+  c:level(hs.canvas.windowLevels.screenSaver)
+  c:behavior({"canJoinAllSpaces", "stationary"})
+
+  -- Pill background
+  c:appendElements({
+    type = "rectangle",
+    roundedRectRadii = {xRadius = R, yRadius = R},
+    fillColor = {red = 0.1, green = 0.1, blue = 0.1, alpha = 0.95},
+    strokeColor = {red = 0.25, green = 0.25, blue = 0.25, alpha = 0.4},
+    strokeWidth = 0.5,
+    frame = {x = 0, y = 0, w = W, h = H},
+  })
+
+  local tileW = W / #devices
+
+  for i, dev in ipairs(devices) do
+    local tx = (i - 1) * tileW
+    local isActive = (dev.name == active)
+    local isConn = connected and connected[dev.name]
+
+    local color = {white = 0.25}
+    if isActive then color = {white = 1} end
+    if isConn and not isActive then color = {white = 0.55} end
+
+    local display = dev.label
+    if isActive then display = "▸ " .. dev.label end
+
+    c:appendElements({
+      type = "text",
+      text = display,
+      textFont = ".AppleSystemUIFont",
+      textColor = color,
+      textSize = 13,
+      textAlignment = "center",
+      frame = {x = tx, y = 11, w = tileW, h = 20},
+    })
+  end
+
+  return c
 end
 
-local function showResult(message)
-  hs.alert.closeAll()
-  hs.alert.show("🎧 " .. message, nil, nil, 2)
+-- =============================================================================
+-- Input handling
+-- =============================================================================
+
+local function hidePill()
+  if autoClose then autoClose:stop(); autoClose = nil end
+  if pill then pill:delete(); pill = nil end
+  if keyTap then keyTap:stop(); keyTap = nil end
+  if clickTap then clickTap:stop(); clickTap = nil end
 end
 
-local function handleChoice(choice)
-  if not choice then return end
+local function swapTo(device)
+  if busy then return end
+  busy = true
+  hidePill()
+  log.i("Swap → " .. device)
 
-  local action = choice.action
-  local device = choice.device
+  runBoseCtl({"swap", device}, function(rc, output)
+    busy = false
+    if rc == 0 then
+      hs.alert.show("▶ " .. device, nil, nil, 1.5)
+    else
+      local err = output:match("Error: (.+)") or "failed"
+      hs.alert.show("✗ " .. err, nil, nil, 3)
+    end
+  end)
+end
 
-  if action == "none" then
-    return
-  end
+local function setupInput()
+  keyTap = hs.eventtap.new({hs.eventtap.event.types.keyDown}, function(e)
+    local code = e:getKeyCode()
+    if code == 53 then hidePill(); return true end
+    local numMap = {[18]=1, [19]=2, [20]=3, [21]=4, [23]=5}
+    local idx = numMap[code]
+    if idx and idx <= #devices then
+      swapTo(devices[idx].name)
+      return true
+    end
+    return false
+  end)
+  keyTap:start()
 
-  if action == "refresh" then
-    M.show()
-    return
-  end
-
-  if action == "swap" then
-    showWorking("Swapping to " .. device .. "...")
-    runBoseCtl({ "swap", device }, function(exitCode, stdout, stderr)
-      if exitCode == 0 and stdout:match("Swapped") then
-        showResult("Swapped to " .. device)
-      elseif exitCode == 0 and stdout:match("OK") then
-        showResult("Connected " .. device)
-      else
-        local err = stdout:match("Error: (.+)") or stderr:match("Error: (.+)") or "unknown error"
-        showResult("Failed: " .. err)
+  clickTap = hs.eventtap.new({hs.eventtap.event.types.leftMouseDown}, function(e)
+    if not pill then return false end
+    local pos = e:location()
+    local pf = pill:frame()
+    if pos.x >= pf.x and pos.x <= pf.x + pf.w and pos.y >= pf.y and pos.y <= pf.y + pf.h then
+      local relX = pos.x - pf.x
+      local tileW = W / #devices
+      local idx = math.floor(relX / tileW) + 1
+      if idx >= 1 and idx <= #devices then
+        swapTo(devices[idx].name)
       end
-    end)
-    return
+      return true
+    else
+      hidePill()
+      return false
+    end
+  end)
+  clickTap:start()
+end
+
+-- =============================================================================
+-- Show
+-- =============================================================================
+
+local function showPill()
+  local output, ok = hs.execute(M.boseCtl .. " status")
+  local active, battery, connected = nil, nil, nil
+  if ok then
+    active, battery, connected = parseStatus(output or "")
   end
 
-  if action == "disconnect" then
-    showWorking("Disconnecting " .. device .. "...")
-    runBoseCtl({ "disconnect", device }, function(exitCode, stdout, stderr)
-      if exitCode == 0 then
-        showResult("Disconnected " .. device)
-      else
-        local err = stdout:match("Error: (.+)") or stderr:match("Error: (.+)") or "unknown error"
-        showResult("Failed: " .. err)
-      end
-    end)
-    return
-  end
+  pill = buildPill(active, battery, connected)
+  pill:show()
+  setupInput()
 
-  if action == "connect" then
-    showWorking("Connecting " .. device .. "...")
-    runBoseCtl({ "connect", device }, function(exitCode, stdout, stderr)
-      if exitCode == 0 and (stdout:match("OK") or stdout:match("connected")) then
-        showResult("Connected " .. device)
-      else
-        local err = stdout:match("Error: (.+)") or stderr:match("Error: (.+)") or "unknown error"
-        showResult("Failed: " .. err)
-      end
-    end)
-    return
-  end
+  autoClose = hs.timer.doAfter(8, hidePill)
 end
 
 -- =============================================================================
 -- Public API
 -- =============================================================================
 
--- Show the chooser popup, querying status first
-function M.show()
-  -- Show loading state immediately
-  if M.chooser then
-    M.chooser:delete()
+function M.toggle()
+  if pill then
+    hidePill()
+  else
+    showPill()
   end
-
-  M.chooser = hs.chooser.new(handleChoice)
-  M.chooser:placeholderText("Bose QC Ultra")
-  M.chooser:searchSubText(true)
-
-  -- Show with loading indicator while we query status
-  M.chooser:choices({
-    { text = "Querying headphones...", subText = "Please wait", action = "none" },
-  })
-  M.chooser:show()
-
-  -- Query status asynchronously
-  runBoseCtl({ "status" }, function(exitCode, stdout, stderr)
-    if exitCode == 0 then
-      lastStatus = parseStatus(stdout)
-    else
-      lastStatus = nil
-      log.w("bose-ctl status failed: " .. (stderr or ""))
-    end
-
-    -- Update chooser with real data (must run on main thread)
-    local items = buildChooserItems(lastStatus)
-
-    -- Check chooser is still visible before updating
-    if M.chooser and M.chooser:isVisible() then
-      M.chooser:choices(items)
-    end
-  end)
 end
 
 function M.start()
-  M.hotkey = hs.hotkey.bind({ "alt" }, "b", function()
-    M.show()
-  end)
+  M.hotkey = hs.hotkey.bind({"alt"}, "b", M.toggle)
   log.i("Bose controller started (⌥B)")
 end
 
 function M.stop()
-  if M.hotkey then
-    M.hotkey:delete()
-    M.hotkey = nil
-  end
-  if M.chooser then
-    M.chooser:delete()
-    M.chooser = nil
-  end
-  log.i("Bose controller stopped")
+  hidePill()
+  if M.hotkey then M.hotkey:delete(); M.hotkey = nil end
 end
 
 return M
