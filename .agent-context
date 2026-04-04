@@ -2,8 +2,8 @@
 # Max 20 lines. Updated by agent on Stop hook.
 
 ## Feature
-Replace phone-relay architecture with direct Mac RFCOMM
-Replace phone-relay architecture with direct Mac RFCOMM
+add phone audio claim and new BMAP commands
+add phone audio claim and new BMAP commands
 
 ## Current State
 Not started. No work has been done yet.

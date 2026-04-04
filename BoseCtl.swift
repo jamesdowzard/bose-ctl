@@ -28,6 +28,54 @@ func runBlueutil(_ args: [String]) -> (Int32, String) {
     }
 }
 
+// === Phone TCP (Tailscale) ===
+
+let PHONE_IP = "100.97.121.67"
+let PHONE_TCP_PORT: UInt16 = 8899
+
+/// Send a command to the phone's BoseService TCP server
+@discardableResult
+func phoneTcp(_ json: String) -> String? {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { return nil }
+    defer { close(fd) }
+
+    var addr = sockaddr_in()
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = PHONE_TCP_PORT.bigEndian
+    inet_pton(AF_INET, PHONE_IP, &addr.sin_addr)
+
+    // 3-second timeout
+    var tv = timeval(tv_sec: 3, tv_usec: 0)
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+    let result = withUnsafePointer(to: &addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard result == 0 else { return nil }
+
+    let data = json.data(using: .utf8)!
+    _ = data.withUnsafeBytes { send(fd, $0.baseAddress!, data.count, 0) }
+
+    var buf = [UInt8](repeating: 0, count: 4096)
+    let n = recv(fd, &buf, buf.count, 0)
+    guard n > 0 else { return nil }
+    return String(bytes: buf[0..<n], encoding: .utf8)
+}
+
+/// Tell phone to claim A2DP audio routing
+func phoneAudioClaim() {
+    if let resp = phoneTcp("{\"cmd\":\"audio_claim\"}") {
+        if resp.contains("\"ok\":true") {
+            // Success — phone will route audio to Bose
+        }
+    }
+    // Best effort — don't fail the whole command if phone is unreachable
+}
+
 // === Helpers ===
 
 func fail(_ message: String) -> Never {
@@ -182,6 +230,12 @@ func cmdConnect(_ deviceName: String) {
     if !bose.connectDevice(mac) {
         fail("failed to connect \(deviceName)")
     }
+
+    // If switching to phone, tell phone to claim A2DP audio routing
+    if isPhoneDevice(mac) {
+        phoneAudioClaim()
+    }
+
     print("Switched to \(deviceName)")
 }
 
@@ -230,7 +284,55 @@ func cmdSwap(_ targetName: String) {
         fail("failed to swap to \(targetName)")
     }
 
+    // If switching to phone, tell phone to claim A2DP audio routing
+    if isPhoneDevice(targetMac) {
+        phoneAudioClaim()
+    }
+
     print("Swapped to \(targetName)")
+}
+
+func cmdVolume(_ arg: String?) {
+    if let level = arg.flatMap({ Int($0) }) {
+        // SET volume
+        guard level >= 0 && level <= 31 else { fail("volume must be 0-31") }
+        guard let resp = bose.sendRaw([0x05, 0x05, 0x02, 0x01, UInt8(level)]) else {
+            fail("volume set failed")
+        }
+        if resp.count >= 6 && resp[2] == OP_RESP {
+            print("\(resp[5])/\(resp[4])")
+        } else {
+            print("Set to \(level)")
+        }
+    } else {
+        // GET volume
+        guard let resp = bose.sendRaw([0x05, 0x05, 0x01, 0x00]) else {
+            fail("volume query failed")
+        }
+        if resp.count >= 6 && resp[2] == OP_RESP {
+            print("\(resp[5])/\(resp[4])")
+        }
+    }
+}
+
+func cmdMultipoint(_ arg: String?) {
+    if let toggle = arg {
+        let value: UInt8 = (toggle == "on" || toggle == "true" || toggle == "1") ? 0x07 : 0x00
+        _ = bose.sendRaw([0x01, 0x0A, 0x02, 0x01, value])
+    }
+    guard let resp = bose.sendRaw([0x01, 0x0A, 0x01, 0x00]) else {
+        fail("multipoint query failed")
+    }
+    if resp.count >= 5 && resp[2] == OP_RESP {
+        let enabled = (resp[4] & 0xFF) != 0
+        print(enabled ? "on" : "off")
+    }
+}
+
+func cmdMedia(_ action: UInt8) {
+    _ = bose.sendRaw([0x05, 0x03, 0x05, 0x01, action])
+    let names: [UInt8: String] = [0x01: "play", 0x02: "pause", 0x03: "next", 0x04: "prev"]
+    print(names[action] ?? "sent")
 }
 
 func cmdRaw(_ hex: String) {
@@ -314,6 +416,18 @@ struct BoseCtlApp {
         case "swap":
             guard args.count >= 3 else { print("Usage: bose-ctl swap <device>"); exit(1) }
             cmdSwap(args[2].lowercased())
+        case "volume", "vol", "v":
+            cmdVolume(args.count >= 3 ? args[2] : nil)
+        case "multipoint", "mp":
+            cmdMultipoint(args.count >= 3 ? args[2] : nil)
+        case "play":
+            cmdMedia(0x01)
+        case "pause":
+            cmdMedia(0x02)
+        case "next":
+            cmdMedia(0x03)
+        case "prev":
+            cmdMedia(0x04)
         case "raw":
             guard args.count >= 3 else { print("Usage: bose-ctl raw <hex>"); exit(1) }
             cmdRaw(args[2])
