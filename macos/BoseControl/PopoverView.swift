@@ -55,6 +55,9 @@ struct PopoverView: View {
         }
         .frame(width: 320)
         .background(bgColor)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Bose Control")
+        .accessibilityIdentifier("bose-control-popover")
         .onAppear {
             volumeSliderValue = Double(manager.volume)
         }
@@ -71,6 +74,7 @@ struct PopoverView: View {
                 Text(manager.deviceName)
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(textPrimary)
+                    .accessibilityLabel("Device name: \(manager.deviceName)")
 
                 if manager.isConnected {
                     HStack(spacing: 6) {
@@ -79,12 +83,14 @@ struct PopoverView: View {
                             ProgressView()
                                 .scaleEffect(0.6)
                                 .frame(width: 12, height: 12)
+                                .accessibilityLabel("Refreshing state")
                         }
                     }
                 } else {
                     Text("Disconnected")
                         .font(.system(size: 12))
                         .foregroundColor(textSecondary)
+                        .accessibilityLabel("Connection status: Disconnected")
                 }
             }
 
@@ -95,6 +101,8 @@ struct PopoverView: View {
             }
         }
         .padding(.bottom, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Header")
     }
 
     private var batteryView: some View {
@@ -106,6 +114,8 @@ struct PopoverView: View {
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .foregroundColor(batteryColor)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Battery level: \(manager.batteryLevel) percent\(manager.batteryCharging ? ", charging" : "")")
     }
 
     private var batteryIcon: String {
@@ -133,6 +143,7 @@ struct PopoverView: View {
             .padding(.vertical, 4)
             .background(accentGreen)
             .cornerRadius(12)
+            .accessibilityLabel("Current noise control mode: \(manager.ancModeName)")
     }
 
     // MARK: - Disconnected
@@ -142,9 +153,11 @@ struct PopoverView: View {
             Image(systemName: "headphones")
                 .font(.system(size: 40))
                 .foregroundColor(textSecondary)
+                .accessibilityLabel("Headphones icon")
             Text("Headphones not connected")
                 .font(.system(size: 13))
                 .foregroundColor(textSecondary)
+                .accessibilityLabel("Headphones not connected")
             Button(action: {
                 manager.connectDevice("mac")
             }) {
@@ -157,8 +170,12 @@ struct PopoverView: View {
                     .cornerRadius(8)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Connect headphones to Mac")
+            .accessibilityIdentifier("connect-button")
         }
         .padding(.vertical, 20)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Disconnected view")
     }
 
     // MARK: - Devices
@@ -173,10 +190,13 @@ struct PopoverView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Devices section")
     }
 
     private func deviceButton(_ device: DeviceButton) -> some View {
         let state = manager.deviceStates[device.id] ?? "offline"
+        let actionVerb = (state == "active" || state == "connected") ? "Disconnect" : "Connect"
 
         return Button(action: {
             if state == "active" || state == "connected" {
@@ -216,6 +236,8 @@ struct PopoverView: View {
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity)
+        .accessibilityLabel("\(actionVerb) \(device.label), status: \(state)")
+        .accessibilityIdentifier("device-\(device.id)")
     }
 
     // MARK: - ANC
@@ -233,10 +255,14 @@ struct PopoverView: View {
             .background(cardColor)
             .cornerRadius(8)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Noise control section")
     }
 
     private func ancButton(_ label: String, mode: Int) -> some View {
         let isSelected = manager.ancMode == mode
+        let fullModeNames = ["Quiet", "Aware", "Custom 1", "Custom 2"]
+        let modeName = mode < fullModeNames.count ? fullModeNames[mode] : label
 
         return Button(action: {
             manager.setAncMode(mode)
@@ -250,6 +276,8 @@ struct PopoverView: View {
                 .cornerRadius(8)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Noise control: \(modeName)\(isSelected ? " (selected)" : "")")
+        .accessibilityIdentifier("anc-\(label.lowercased())")
     }
 
     // MARK: - Volume
@@ -262,12 +290,14 @@ struct PopoverView: View {
                 Text("\(Int(volumeSliderValue))/\(manager.volumeMax)")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(textSecondary)
+                    .accessibilityLabel("Volume: \(Int(volumeSliderValue)) of \(manager.volumeMax)")
             }
 
             HStack(spacing: 8) {
                 Image(systemName: "speaker.fill")
                     .font(.system(size: 11))
                     .foregroundColor(textSecondary)
+                    .accessibilityLabel("Volume minimum")
 
                 Slider(value: $volumeSliderValue, in: 0...Double(manager.volumeMax), step: 1) { editing in
                     if !editing {
@@ -275,12 +305,18 @@ struct PopoverView: View {
                     }
                 }
                 .accentColor(accentGreen)
+                .accessibilityLabel("Volume slider")
+                .accessibilityValue("\(Int(volumeSliderValue)) of \(manager.volumeMax)")
+                .accessibilityIdentifier("volume-slider")
 
                 Image(systemName: "speaker.wave.3.fill")
                     .font(.system(size: 11))
                     .foregroundColor(textSecondary)
+                    .accessibilityLabel("Volume maximum")
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Volume section")
     }
 
     // MARK: - Settings
@@ -310,6 +346,8 @@ struct PopoverView: View {
                                         manager.setDeviceName(nameField)
                                         editingName = false
                                     }
+                                    .accessibilityLabel("Device name text field")
+                                    .accessibilityIdentifier("device-name-field")
                                 Button("Save") {
                                     manager.setDeviceName(nameField)
                                     editingName = false
@@ -317,6 +355,8 @@ struct PopoverView: View {
                                 .font(.system(size: 10))
                                 .buttonStyle(.plain)
                                 .foregroundColor(accentGreen)
+                                .accessibilityLabel("Save device name")
+                                .accessibilityIdentifier("save-device-name")
                             }
                         } else {
                             Button(action: {
@@ -328,8 +368,12 @@ struct PopoverView: View {
                                     .foregroundColor(textPrimary)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("Edit device name: \(manager.deviceName)")
+                            .accessibilityIdentifier("edit-device-name")
                         }
                     }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Device name setting")
 
                     // Multipoint toggle
                     HStack {
@@ -344,13 +388,19 @@ struct PopoverView: View {
                         .toggleStyle(.switch)
                         .scaleEffect(0.7)
                         .frame(width: 40)
+                        .accessibilityLabel("Multipoint toggle, \(manager.multipointEnabled ? "enabled" : "disabled")")
+                        .accessibilityIdentifier("multipoint-toggle")
                     }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Multipoint setting")
 
                     // Auto-off timer
                     settingsRow("Auto-off", value: manager.autoOffTimer.isEmpty ? "-" : manager.autoOffTimer)
+                        .accessibilityLabel("Auto-off timer: \(manager.autoOffTimer.isEmpty ? "not set" : manager.autoOffTimer)")
 
                     // Immersion level
                     settingsRow("Immersion", value: manager.immersionLevel.isEmpty ? "-" : manager.immersionLevel)
+                        .accessibilityLabel("Immersion level: \(manager.immersionLevel.isEmpty ? "not set" : manager.immersionLevel)")
 
                     // Wear detection
                     HStack {
@@ -367,6 +417,8 @@ struct PopoverView: View {
                                 .foregroundColor(textPrimary)
                         }
                     }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Wear detection: \(manager.onHead ? "on head" : "off head")")
 
                     // EQ
                     HStack {
@@ -378,6 +430,8 @@ struct PopoverView: View {
                             .font(.system(size: 12, design: .monospaced))
                             .foregroundColor(textPrimary)
                     }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Equalizer: bass \(manager.eq.bass), mid \(manager.eq.mid), treble \(manager.eq.treble)")
                 }
                 .padding(.top, 8)
             },
@@ -386,6 +440,8 @@ struct PopoverView: View {
             }
         )
         .accentColor(textSecondary)
+        .accessibilityLabel("Settings section, \(showSettings ? "expanded" : "collapsed")")
+        .accessibilityIdentifier("settings-disclosure")
     }
 
     // MARK: - Info
@@ -396,12 +452,19 @@ struct PopoverView: View {
             content: {
                 VStack(spacing: 8) {
                     infoRow("Firmware", value: manager.firmware)
+                        .accessibilityLabel("Firmware: \(manager.firmware.isEmpty ? "unknown" : manager.firmware)")
                     infoRow("Serial", value: manager.serialNumber)
+                        .accessibilityLabel("Serial number: \(manager.serialNumber.isEmpty ? "unknown" : manager.serialNumber)")
                     infoRow("Product", value: manager.productName)
+                        .accessibilityLabel("Product: \(manager.productName.isEmpty ? "unknown" : manager.productName)")
                     infoRow("Platform", value: manager.platform)
+                        .accessibilityLabel("Platform: \(manager.platform.isEmpty ? "unknown" : manager.platform)")
                     infoRow("Codename", value: manager.codename)
+                        .accessibilityLabel("Codename: \(manager.codename.isEmpty ? "unknown" : manager.codename)")
                     infoRow("Codec", value: manager.audioCodec)
+                        .accessibilityLabel("Audio codec: \(manager.audioCodec.isEmpty ? "unknown" : manager.audioCodec)")
                     infoRow("MAC", value: "E4:58:BC:C0:2F:72")
+                        .accessibilityLabel("MAC address: E4:58:BC:C0:2F:72")
                 }
                 .padding(.top, 8)
             },
@@ -410,6 +473,8 @@ struct PopoverView: View {
             }
         )
         .accentColor(textSecondary)
+        .accessibilityLabel("Info section, \(showInfo ? "expanded" : "collapsed")")
+        .accessibilityIdentifier("info-disclosure")
     }
 
     // MARK: - Helpers

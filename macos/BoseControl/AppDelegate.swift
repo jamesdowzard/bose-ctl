@@ -25,6 +25,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.action = #selector(togglePopover)
             button.target = self
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.setAccessibilityLabel("Bose Control menu bar")
+            button.setAccessibilityRole(.button)
+            button.setAccessibilityIdentifier("bose-control-status-button")
         }
 
         // --- Popover ---
@@ -32,9 +35,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.contentSize = NSSize(width: 320, height: 480)
         popover.behavior = .transient
         popover.delegate = self
-        popover.contentViewController = NSHostingController(
+        let hostingController = NSHostingController(
             rootView: PopoverView(manager: manager)
         )
+        hostingController.view.setAccessibilityLabel("Bose Control popover")
+        hostingController.view.setAccessibilityIdentifier("bose-control-popover-view")
+        popover.contentViewController = hostingController
 
         // --- Global hotkey: Option+B via CGEventTap (needs Accessibility permission) ---
         installEventTap()
@@ -75,8 +81,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let charging = manager.batteryCharging
             let suffix = charging ? "\u{26A1}" : "%"  // bolt when charging
             button.title = " \(level)\(suffix)"
+            button.setAccessibilityLabel("Bose Control, battery \(level) percent\(charging ? " charging" : ""), \(manager.ancModeName) mode")
         } else {
             button.title = ""
+            button.setAccessibilityLabel("Bose Control, disconnected")
         }
     }
 
