@@ -1,10 +1,10 @@
-# Agent Progress - doc-transport
+# Agent Progress - ble-gatt-eq
 # Format: KEY=VALUE, one per line. Agents append, last value wins.
-# Created: 2026-04-05T02:42:28Z
+# Created: 2026-04-05T03:03:32Z
 
-feature=doc-transport
-name=Document verified RFCOMM vs BLE GATT transport
+feature=ble-gatt-eq
+name=Add BLE GATT transport for EQ, immersion, auto-off
 status=pending
 step=0
 step_name=Not started
-created=2026-04-05T02:42:28Z
+created=2026-04-05T03:03:32Z

@@ -2,8 +2,8 @@
 # Max 20 lines. Updated by agent on Stop hook.
 
 ## Feature
-Document verified RFCOMM vs BLE GATT transport
-Document verified RFCOMM vs BLE GATT transport
+Add BLE GATT transport for EQ, immersion, auto-off
+Add BLE GATT transport for EQ, immersion, auto-off
 
 ## Current State
 Not started. No work has been done yet.
