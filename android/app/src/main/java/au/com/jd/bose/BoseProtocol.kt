@@ -40,6 +40,7 @@ object BoseProtocol {
     const val OP_START: Byte = 0x05
     const val OP_SET: Byte = 0x06
     const val OP_ACK: Byte = 0x07
+    const val OP_SET_GET: Byte = 0x02
 
     // Known devices: name -> MAC bytes
     val DEVICES: LinkedHashMap<String, ByteArray> = linkedMapOf(
@@ -50,18 +51,6 @@ object BoseProtocol {
         "tv" to byteArrayOf(0x14, 0xC1.toByte(), 0x4E, 0xB7.toByte(), 0xCB.toByte(), 0x68),
         "quest" to byteArrayOf(0x78, 0xC4.toByte(), 0xFA.toByte(), 0xC8.toByte(), 0x5C, 0x3D),
     )
-
-    // Device MAC strings for display
-    val DEVICE_MACS: Map<String, String> = mapOf(
-        "phone" to "A8:76:50:D3:B1:1B",
-        "mac" to "BC:D0:74:11:DB:27",
-        "ipad" to "F4:81:C4:B5:FA:AB",
-        "iphone" to "F8:4D:89:C4:B6:ED",
-        "tv" to "14:C1:4E:B7:CB:68",
-        "quest" to "78:C4:FA:C8:5C:3D",
-    )
-
-    val CYCLE_ORDER = listOf("mac", "quest", "ipad", "iphone", "tv", "phone")
 
     private val rfcommLock = ReentrantLock()
     private var socket: BluetoothSocket? = null
@@ -156,7 +145,7 @@ object BoseProtocol {
      * connect() acquires rfcommLock, disconnect() releases it.
      */
     suspend fun <T> withConnection(block: suspend () -> T): T = withContext(Dispatchers.IO) {
-        connect()
+        if (!connect()) throw IOException("Cannot connect to headphones")
         try {
             block()
         } finally {
@@ -315,36 +304,6 @@ object BoseProtocol {
         return devices
     }
 
-    /** GET active device MAC. 04,09,01,00 -> MAC at bytes 4-9 */
-    fun getActiveDevice(): ByteArray? {
-        val resp = send(byteArrayOf(0x04, 0x09, OP_GET, 0x00)) ?: return null
-        if (resp.size < 10 || resp[2] != OP_RESP) return null
-        return resp.copyOfRange(4, 10)
-    }
-
-    // ======================================================================
-    // Paired devices
-    // ======================================================================
-
-    /** GET paired devices. 04,04,01,00 -> count + MAC array */
-    fun getPairedDevices(): List<ByteArray> {
-        val resp = send(byteArrayOf(0x04, 0x04, OP_GET, 0x00)) ?: return emptyList()
-        if (resp.size < 5 || resp[2] != OP_RESP) return emptyList()
-
-        val payloadLen = resp[3].toInt() and 0xFF
-        if (payloadLen < 1) return emptyList()
-
-        val count = resp[4].toInt() and 0xFF
-        val devices = mutableListOf<ByteArray>()
-        var i = 5
-        for (j in 0 until count) {
-            if (i + 6 > resp.size) break
-            devices.add(resp.copyOfRange(i, i + 6))
-            i += 6
-        }
-        return devices
-    }
-
     // ======================================================================
     // Device info
     // ======================================================================
@@ -398,12 +357,12 @@ object BoseProtocol {
     }
 
     // ======================================================================
-    // Firmware version
+    // String field queries (firmware, serial, product, platform, codename)
     // ======================================================================
 
-    /** GET firmware version. 00,05,01,00 -> version string */
-    fun getFirmwareVersion(): String? {
-        val resp = send(byteArrayOf(0x00, 0x05, OP_GET, 0x00)) ?: return null
+    /** Send a GET query and parse the response as a UTF-8 string. */
+    private fun getStringResponse(block: Byte, func: Byte): String? {
+        val resp = send(byteArrayOf(block, func, OP_GET, 0x00)) ?: return null
         if (resp.size < 5 || resp[2] != OP_RESP) return null
         val payloadLen = resp[3].toInt() and 0xFF
         if (payloadLen < 1) return null
@@ -411,61 +370,11 @@ object BoseProtocol {
         return String(resp, 4, end - 4, Charsets.UTF_8).trim('\u0000')
     }
 
-    // ======================================================================
-    // Serial number
-    // ======================================================================
-
-    /** GET serial number. 00,07,01,00 -> serial string */
-    fun getSerialNumber(): String? {
-        val resp = send(byteArrayOf(0x00, 0x07, OP_GET, 0x00)) ?: return null
-        if (resp.size < 5 || resp[2] != OP_RESP) return null
-        val payloadLen = resp[3].toInt() and 0xFF
-        if (payloadLen < 1) return null
-        val end = (4 + payloadLen).coerceAtMost(resp.size)
-        return String(resp, 4, end - 4, Charsets.UTF_8).trim('\u0000')
-    }
-
-    // ======================================================================
-    // Product name
-    // ======================================================================
-
-    /** GET product name. 00,0f,01,00 -> name string */
-    fun getProductName(): String? {
-        val resp = send(byteArrayOf(0x00, 0x0F, OP_GET, 0x00)) ?: return null
-        if (resp.size < 5 || resp[2] != OP_RESP) return null
-        val payloadLen = resp[3].toInt() and 0xFF
-        if (payloadLen < 1) return null
-        val end = (4 + payloadLen).coerceAtMost(resp.size)
-        return String(resp, 4, end - 4, Charsets.UTF_8).trim('\u0000')
-    }
-
-    // ======================================================================
-    // Platform
-    // ======================================================================
-
-    /** GET platform string. 12,0d,01,00 -> e.g. "OTG-QCC-384" */
-    fun getPlatform(): String? {
-        val resp = send(byteArrayOf(0x12, 0x0D, OP_GET, 0x00)) ?: return null
-        if (resp.size < 5 || resp[2] != OP_RESP) return null
-        val payloadLen = resp[3].toInt() and 0xFF
-        if (payloadLen < 1) return null
-        val end = (4 + payloadLen).coerceAtMost(resp.size)
-        return String(resp, 4, end - 4, Charsets.UTF_8).trim('\u0000')
-    }
-
-    // ======================================================================
-    // Codename
-    // ======================================================================
-
-    /** GET codename. 12,0c,01,00 -> e.g. "wolverine" */
-    fun getCodename(): String? {
-        val resp = send(byteArrayOf(0x12, 0x0C, OP_GET, 0x00)) ?: return null
-        if (resp.size < 5 || resp[2] != OP_RESP) return null
-        val payloadLen = resp[3].toInt() and 0xFF
-        if (payloadLen < 1) return null
-        val end = (4 + payloadLen).coerceAtMost(resp.size)
-        return String(resp, 4, end - 4, Charsets.UTF_8).trim('\u0000')
-    }
+    fun getFirmwareVersion() = getStringResponse(0x00, 0x05)
+    fun getSerialNumber()    = getStringResponse(0x00, 0x07)
+    fun getProductName()     = getStringResponse(0x00, 0x0F)
+    fun getPlatform()        = getStringResponse(0x12, 0x0D)
+    fun getCodename()        = getStringResponse(0x12, 0x0C)
 
     // ======================================================================
     // Audio codec
@@ -512,9 +421,10 @@ object BoseProtocol {
         return String(resp, start, end - start, Charsets.UTF_8).trim('\u0000')
     }
 
-    /** SET device name. 01,02,06,len,00,name_bytes */
+    /** SET device name. 01,02,06,len,00,name_bytes. Max 30 UTF-8 bytes. */
     fun setDeviceName(name: String): Boolean {
         val nameBytes = name.toByteArray(Charsets.UTF_8)
+        if (nameBytes.size > 30) return false
         val payloadLen = nameBytes.size + 1 // +1 for leading 0x00
         val cmd = byteArrayOf(0x01, 0x02, OP_SET, payloadLen.toByte(), 0x00) + nameBytes
         val resp = send(cmd) ?: return false
@@ -620,8 +530,6 @@ object BoseProtocol {
     // EQ (SET uses SET_GET operator 0x02, not SET 0x06)
     // ======================================================================
 
-    private const val OP_SET_GET: Byte = 0x02
-
     /** SET one EQ band. 01,07,02,02,{value},{band}. band: 0=bass 1=mid 2=treble. value: -10 to +10 */
     fun setEqBand(band: Int, value: Int): Boolean {
         if (band !in 0..2 || value !in -10..10) return false
@@ -672,15 +580,6 @@ object BoseProtocol {
             if (addr.contentEquals(mac)) return name
         }
         return macToString(mac)
-    }
-
-    fun nextDevice(currentName: String): String {
-        val idx = CYCLE_ORDER.indexOf(currentName)
-        return if (idx >= 0) {
-            CYCLE_ORDER[(idx + 1) % CYCLE_ORDER.size]
-        } else {
-            CYCLE_ORDER[0]
-        }
     }
 
     private fun ByteArray.toHexString(): String =

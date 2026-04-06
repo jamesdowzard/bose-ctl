@@ -26,6 +26,7 @@ private let deviceButtons: [DeviceButton] = [
     DeviceButton(id: "ipad", label: "iPad", symbol: "ipad"),
     DeviceButton(id: "iphone", label: "iPhone", symbol: "iphone"),
     DeviceButton(id: "tv", label: "TV", symbol: "tv"),
+    DeviceButton(id: "quest", label: "Quest", symbol: "visionpro"),
 ]
 
 // MARK: - Main View
@@ -542,8 +543,8 @@ struct PopoverView: View {
                         .accessibilityLabel("Codename: \(manager.codename.isEmpty ? "unknown" : manager.codename)")
                     infoRow("Codec", value: manager.audioCodec)
                         .accessibilityLabel("Audio codec: \(manager.audioCodec.isEmpty ? "unknown" : manager.audioCodec)")
-                    infoRow("MAC", value: "E4:58:BC:C0:2F:72")
-                        .accessibilityLabel("MAC address: E4:58:BC:C0:2F:72")
+                    infoRow("MAC", value: BOSE_MAC.replacingOccurrences(of: "-", with: ":"))
+                        .accessibilityLabel("MAC address: \(BOSE_MAC)")
                 }
                 .padding(.top, 8)
             },

@@ -1,5 +1,5 @@
 /// BoseRFCOMM: Direct RFCOMM BMAP protocol module for Bose QC Ultra 2
-/// On-demand: open channel 8, send BMAP bytes, read response, close.
+/// On-demand: open RFCOMM (channel resolved via SDP), send BMAP bytes, read response, close.
 /// Both Mac and phone can independently control headphones this way.
 ///
 /// Protocol: BMAP (Bose Music Application Protocol)
@@ -21,6 +21,7 @@ let OP_RESP:  UInt8 = 0x03
 let OP_ERR:   UInt8 = 0x04
 let OP_START: UInt8 = 0x05
 let OP_SET:   UInt8 = 0x06  // Also RESULT
+let OP_SET_GET: UInt8 = 0x02
 let OP_ACK:   UInt8 = 0x07
 
 // MARK: - Data Types
@@ -40,7 +41,7 @@ struct DeviceInfo {
 enum BoseError: Error, CustomStringConvertible {
     case deviceNotFound
     case connectionFailed(IOReturn)
-    case bmapVerificationFailed
+
     case timeout
 
     var description: String {
@@ -49,8 +50,7 @@ enum BoseError: Error, CustomStringConvertible {
             return "Bluetooth device not found: \(BOSE_MAC)"
         case .connectionFailed(let status):
             return "RFCOMM connection failed: \(status)"
-        case .bmapVerificationFailed:
-            return "BMAP protocol verification failed (firmware query returned unexpected data)"
+
         case .timeout:
             return "RFCOMM response timeout"
         }
@@ -96,7 +96,7 @@ class RFCOMMDelegate: NSObject, IOBluetoothRFCOMMChannelDelegate {
 
 /// Direct RFCOMM communication with Bose QC Ultra 2 headphones.
 ///
-/// On-demand pattern: each command opens RFCOMM channel 8, sends BMAP bytes,
+/// On-demand pattern: each command opens RFCOMM (SDP-resolved channel), sends BMAP bytes,
 /// reads the response, then closes. No persistent connection. This allows
 /// both Mac and phone to independently control the headphones.
 /// Waits for CoreBluetooth central manager to reach poweredOn state.
@@ -426,7 +426,7 @@ class BoseRFCOMM {
                 guard let resp = sendBMAP(channel, bytes: cmd, timeout: 5.0) else {
                     return false
                 }
-                return resp.count >= 4 && (resp[2] == OP_ACK || resp[2] == OP_SET)
+                return resp.count >= 4 && (resp[2] == OP_ACK || resp[2] == OP_RESP)
             }
         } catch {
             return false
@@ -443,17 +443,11 @@ class BoseRFCOMM {
                 guard let resp = sendBMAP(channel, bytes: cmd, timeout: 3.0) else {
                     return false
                 }
-                return resp.count >= 4 && (resp[2] == OP_ACK || resp[2] == OP_SET)
+                return resp.count >= 4 && (resp[2] == OP_ACK || resp[2] == OP_RESP)
             }
         } catch {
             return false
         }
-    }
-
-    /// Switch audio to a device. On QC Ultra 2, CONNECT (0x01) both connects
-    /// the device AND makes it the active audio source.
-    func switchToDevice(_ mac: [UInt8]) -> Bool {
-        return connectDevice(mac)
     }
 
     /// Get firmware version string.
@@ -705,7 +699,7 @@ class BoseRFCOMM {
         do {
             return try withRFCOMM { channel in
                 let value: UInt8 = enabled ? 0x07 : 0x00
-                guard let resp = sendBMAP(channel, bytes: [0x01, 0x0A, OP_SET, 0x01, value]) else {
+                guard let resp = sendBMAP(channel, bytes: [0x01, 0x0A, OP_SET_GET, 0x01, value]) else {
                     return false
                 }
                 return resp.count >= 4 && (resp[2] == OP_ACK || resp[2] == OP_RESP)
@@ -770,7 +764,7 @@ class BoseRFCOMM {
     /// Send: [0x1F, 0x0A, 0x02, 0x05, {cncLevel}, {autoCNC}, {spatial}, {windBlock}, {ancToggle}]
     func setCncLevel(_ level: Int) -> Bool {
         guard level >= 0 && level <= 10 else { return false }
-        let OP_SET_GET: UInt8 = 0x02
+
         do {
             return try withRFCOMM { channel in
                 // Read current config first to preserve other fields
@@ -836,7 +830,7 @@ class BoseRFCOMM {
     func setEQBand(_ band: Int, value: Int) -> Bool {
         guard band >= 0 && band <= 2 else { return false }
         guard value >= -10 && value <= 10 else { return false }
-        let OP_SET_GET: UInt8 = 0x02
+
         do {
             return try withRFCOMM { channel in
                 let cmd: [UInt8] = [0x01, 0x07, OP_SET_GET, 0x02, UInt8(bitPattern: Int8(value)), UInt8(band)]
@@ -851,7 +845,7 @@ class BoseRFCOMM {
     /// Set all three EQ bands in a single RFCOMM session.
     func setEQ(bass: Int, mid: Int, treble: Int) -> Bool {
         guard (-10...10).contains(bass), (-10...10).contains(mid), (-10...10).contains(treble) else { return false }
-        let OP_SET_GET: UInt8 = 0x02
+
         do {
             return try withRFCOMM { channel in
                 for (band, value) in [(0, bass), (1, mid), (2, treble)] {

@@ -157,7 +157,10 @@ class BoseManager: ObservableObject {
             if connected && self.boseReady {
                 // fetchAllState dispatches to rfcommQueue — but we're already on it,
                 // so inline the work here to avoid deadlock
-                guard let bose = self.bose else { return }
+                guard let bose = self.bose else {
+                    DispatchQueue.main.async { self.isRefreshing = false }
+                    return
+                }
                 let state = bose.getAllState()
                 DispatchQueue.main.async {
                     self.applyState(state)
@@ -173,17 +176,6 @@ class BoseManager: ObservableObject {
                     self.isRefreshing = false
                     self.onStateChange?()
                 }
-            }
-        }
-    }
-
-    /// Called from rfcommQueue — dispatches to rfcommQueue for RFCOMM work.
-    private func fetchAllState() {
-        rfcommQueue.async { [weak self] in
-            guard let self = self, let bose = self.bose else { return }
-            let state = bose.getAllState()
-            DispatchQueue.main.async {
-                self.applyState(state)
             }
         }
     }

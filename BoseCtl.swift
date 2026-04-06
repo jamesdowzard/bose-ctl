@@ -1,5 +1,5 @@
 /// bose-ctl: CLI for Bose QC Ultra headphone control
-/// Direct RFCOMM — Mac opens channel 8 independently, no daemon needed.
+/// Direct RFCOMM — Mac opens channel independently (SDP-resolved), no daemon needed.
 
 import Foundation
 
