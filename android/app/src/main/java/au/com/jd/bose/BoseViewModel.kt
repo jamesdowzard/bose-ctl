@@ -69,124 +69,46 @@ class BoseViewModel(application: Application) : AndroidViewModel(application) {
             _state.value = _state.value.copy(loading = true, error = null)
             try {
                 BoseProtocol.withConnection {
-                    // Battery
-                    BoseProtocol.getBattery()?.let { bat ->
-                        _state.value = _state.value.copy(
-                            batteryLevel = bat.level,
-                            batteryCharging = bat.charging,
-                        )
-                    }
+                    // Collect all results into a local copy, emit once at end
+                    var s = _state.value
 
-                    // ANC
-                    BoseProtocol.getAncMode()?.let { mode ->
-                        _state.value = _state.value.copy(ancMode = mode)
-                    }
+                    BoseProtocol.getBattery()?.let { s = s.copy(batteryLevel = it.level, batteryCharging = it.charging) }
+                    BoseProtocol.getAncMode()?.let { s = s.copy(ancMode = it) }
+                    BoseProtocol.getVolume()?.let { s = s.copy(volume = it.current, volumeMax = it.max) }
 
-                    // Volume
-                    BoseProtocol.getVolume()?.let { vol ->
-                        _state.value = _state.value.copy(
-                            volume = vol.current,
-                            volumeMax = vol.max,
-                        )
-                    }
-
-                    // Audio-connected devices (05,01) = active (green)
-                    val audioMacs = BoseProtocol.getConnectedDevices()
-                    val audioNames = audioMacs.map { BoseProtocol.nameForMac(it) }.toSet()
-
-                    // Per-device ACL status (04,05) = connected (orange)
+                    // Device connection states
+                    val audioNames = BoseProtocol.getConnectedDevices()
+                        .map { BoseProtocol.nameForMac(it) }.toSet()
                     val aclNames = mutableSetOf<String>()
                     for ((name, mac) in BoseProtocol.DEVICES) {
                         val info = BoseProtocol.getDeviceInfo(mac)
-                        if (info != null && info.connected) {
-                            aclNames.add(name)
-                        }
+                        if (info != null && info.connected) aclNames.add(name)
                     }
-
-                    val deviceStates = BoseProtocol.DEVICES.keys.associateWith { name ->
+                    s = s.copy(deviceStates = BoseProtocol.DEVICES.keys.associateWith { name ->
                         when {
                             audioNames.contains(name) -> DeviceState.ACTIVE
                             aclNames.contains(name) -> DeviceState.CONNECTED
                             else -> DeviceState.OFFLINE
                         }
-                    }
-                    _state.value = _state.value.copy(deviceStates = deviceStates)
+                    })
 
-                    // Firmware
-                    BoseProtocol.getFirmwareVersion()?.let { fw ->
-                        _state.value = _state.value.copy(firmwareVersion = fw)
-                    }
+                    BoseProtocol.getFirmwareVersion()?.let { s = s.copy(firmwareVersion = it) }
+                    BoseProtocol.getDeviceName()?.let { s = s.copy(deviceName = it) }
+                    BoseProtocol.getMultipoint()?.let { s = s.copy(multipointEnabled = it) }
+                    BoseProtocol.getCncLevel()?.let { s = s.copy(cncLevel = it) }
+                    BoseProtocol.getAutoOffTimer()?.let { s = s.copy(autoOffTimer = BoseProtocol.autoOffTimerDescription(it)) }
+                    BoseProtocol.getWearState()?.let { s = s.copy(wearDetected = it) }
+                    BoseProtocol.getSerialNumber()?.let { s = s.copy(serialNumber = it) }
+                    BoseProtocol.getPlatform()?.let { s = s.copy(platform = it) }
+                    BoseProtocol.getCodename()?.let { s = s.copy(codename = it) }
+                    BoseProtocol.getAudioCodec()?.let { s = s.copy(codecName = BoseProtocol.codecName(it.codecId), codecBitrate = it.bitrate) }
+                    BoseProtocol.getProductName()?.let { s = s.copy(productName = it) }
+                    BoseProtocol.getEq()?.let { s = s.copy(eqBass = it.bass.value, eqMid = it.mid.value, eqTreble = it.treble.value) }
+                    BoseProtocol.getImmersionLevel()?.let { s = s.copy(immersionLevel = it) }
 
-                    // Device name
-                    BoseProtocol.getDeviceName()?.let { name ->
-                        _state.value = _state.value.copy(deviceName = name)
-                    }
-
-                    // Multipoint
-                    BoseProtocol.getMultipoint()?.let { mp ->
-                        _state.value = _state.value.copy(multipointEnabled = mp)
-                    }
-
-                    // CNC Level
-                    BoseProtocol.getCncLevel()?.let { level ->
-                        _state.value = _state.value.copy(cncLevel = level)
-                    }
-
-                    // Auto-off
-                    BoseProtocol.getAutoOffTimer()?.let { timer ->
-                        _state.value = _state.value.copy(
-                            autoOffTimer = BoseProtocol.autoOffTimerDescription(timer)
-                        )
-                    }
-
-                    // Wear state
-                    BoseProtocol.getWearState()?.let { wearing ->
-                        _state.value = _state.value.copy(wearDetected = wearing)
-                    }
-
-                    // Serial
-                    BoseProtocol.getSerialNumber()?.let { serial ->
-                        _state.value = _state.value.copy(serialNumber = serial)
-                    }
-
-                    // Platform
-                    BoseProtocol.getPlatform()?.let { plat ->
-                        _state.value = _state.value.copy(platform = plat)
-                    }
-
-                    // Codename
-                    BoseProtocol.getCodename()?.let { cn ->
-                        _state.value = _state.value.copy(codename = cn)
-                    }
-
-                    // Codec
-                    BoseProtocol.getAudioCodec()?.let { codec ->
-                        _state.value = _state.value.copy(
-                            codecName = BoseProtocol.codecName(codec.codecId),
-                            codecBitrate = codec.bitrate,
-                        )
-                    }
-
-                    // Product name
-                    BoseProtocol.getProductName()?.let { pn ->
-                        _state.value = _state.value.copy(productName = pn)
-                    }
-
-                    // EQ
-                    BoseProtocol.getEq()?.let { eq ->
-                        _state.value = _state.value.copy(
-                            eqBass = eq.bass.value,
-                            eqMid = eq.mid.value,
-                            eqTreble = eq.treble.value,
-                        )
-                    }
-
-                    // Immersion
-                    BoseProtocol.getImmersionLevel()?.let { imm ->
-                        _state.value = _state.value.copy(immersionLevel = imm)
-                    }
+                    // Single emission — one recomposition instead of 18
+                    _state.value = s.copy(loading = false)
                 }
-                _state.value = _state.value.copy(loading = false)
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     loading = false,
@@ -200,11 +122,13 @@ class BoseViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _state.value = _state.value.copy(loading = true, error = null)
             try {
-                val mac = BoseProtocol.DEVICES[name] ?: return@launch
+                val mac = BoseProtocol.DEVICES[name] ?: run {
+                    _state.value = _state.value.copy(loading = false)
+                    return@launch
+                }
                 BoseProtocol.withConnection {
                     BoseProtocol.connectDevice(mac)
                 }
-                // Refresh to get updated state
                 refreshAll()
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
@@ -215,99 +139,51 @@ class BoseViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setAncMode(mode: BoseProtocol.AncMode) {
+    /** Send a command to headphones with error handling. */
+    private fun command(
+        errorPrefix: String,
+        action: suspend () -> Unit,
+        onSuccess: () -> Unit = {},
+    ) {
         viewModelScope.launch {
             try {
-                BoseProtocol.withConnection {
-                    BoseProtocol.setAncMode(mode)
-                }
-                _state.value = _state.value.copy(ancMode = mode)
+                BoseProtocol.withConnection { action() }
+                onSuccess()
             } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    error = "Failed to set ANC: ${e.message}",
-                )
+                _state.value = _state.value.copy(error = "$errorPrefix: ${e.message}")
             }
         }
     }
 
-    fun setVolume(level: Int) {
-        viewModelScope.launch {
-            try {
-                BoseProtocol.withConnection {
-                    BoseProtocol.setVolume(level)
-                }
-                _state.value = _state.value.copy(volume = level)
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    error = "Failed to set volume: ${e.message}",
-                )
-            }
-        }
-    }
+    fun setAncMode(mode: BoseProtocol.AncMode) = command("Failed to set ANC",
+        action = { BoseProtocol.setAncMode(mode) },
+        onSuccess = { _state.value = _state.value.copy(ancMode = mode) },
+    )
 
-    fun setDeviceName(name: String) {
-        viewModelScope.launch {
-            try {
-                BoseProtocol.withConnection {
-                    BoseProtocol.setDeviceName(name)
-                }
-                _state.value = _state.value.copy(deviceName = name)
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    error = "Failed to set name: ${e.message}",
-                )
-            }
-        }
-    }
+    fun setVolume(level: Int) = command("Failed to set volume",
+        action = { BoseProtocol.setVolume(level) },
+        onSuccess = { _state.value = _state.value.copy(volume = level) },
+    )
 
-    fun setMultipoint(enabled: Boolean) {
-        viewModelScope.launch {
-            try {
-                BoseProtocol.withConnection {
-                    BoseProtocol.setMultipoint(enabled)
-                }
-                _state.value = _state.value.copy(multipointEnabled = enabled)
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    error = "Failed to set multipoint: ${e.message}",
-                )
-            }
-        }
-    }
+    fun setDeviceName(name: String) = command("Failed to set name",
+        action = { BoseProtocol.setDeviceName(name) },
+        onSuccess = { _state.value = _state.value.copy(deviceName = name) },
+    )
 
-    fun setEq(bass: Int, mid: Int, treble: Int) {
-        viewModelScope.launch {
-            try {
-                BoseProtocol.withConnection {
-                    BoseProtocol.setEq(bass, mid, treble)
-                }
-                _state.value = _state.value.copy(
-                    eqBass = bass,
-                    eqMid = mid,
-                    eqTreble = treble,
-                )
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    error = "Failed to set EQ: ${e.message}",
-                )
-            }
-        }
-    }
+    fun setMultipoint(enabled: Boolean) = command("Failed to set multipoint",
+        action = { BoseProtocol.setMultipoint(enabled) },
+        onSuccess = { _state.value = _state.value.copy(multipointEnabled = enabled) },
+    )
 
-    fun setCncLevel(level: Int) {
-        viewModelScope.launch {
-            try {
-                BoseProtocol.withConnection {
-                    BoseProtocol.setCncLevel(level)
-                }
-                _state.value = _state.value.copy(cncLevel = level)
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    error = "Failed to set ANC depth: ${e.message}",
-                )
-            }
-        }
-    }
+    fun setEq(bass: Int, mid: Int, treble: Int) = command("Failed to set EQ",
+        action = { BoseProtocol.setEq(bass, mid, treble) },
+        onSuccess = { _state.value = _state.value.copy(eqBass = bass, eqMid = mid, eqTreble = treble) },
+    )
+
+    fun setCncLevel(level: Int) = command("Failed to set ANC depth",
+        action = { BoseProtocol.setCncLevel(level) },
+        onSuccess = { _state.value = _state.value.copy(cncLevel = level) },
+    )
 
     fun toggleSettings() {
         _state.value = _state.value.copy(

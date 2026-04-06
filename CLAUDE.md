@@ -15,7 +15,7 @@ Mac:   bose-ctl (CLI)                     → IOBluetooth RFCOMM → Headphones
 Phone: BoseControl (Android/Compose)      → Android RFCOMM     → Headphones
 ```
 
-Each command: open RFCOMM channel 8, send BMAP, read response, close (~200-300ms).
+Each command: open RFCOMM (SDP-resolved channel), send BMAP, read response, close (~200-300ms).
 Both devices can send commands at any time -- SPP is single-connection, so if both try
 simultaneously one waits, but in practice commands are too brief to collide.
 
@@ -28,8 +28,12 @@ simultaneously one waits, but in practice commands are too brief to collide.
 
 ### Android (`android/`)
 - `android/` -- Jetpack Compose app (package: `au.com.jd.bose`)
-- Foreground service, home screen widget, Quick Settings tile
-- Companion device registered, A2DP auto-accept, boot receiver
+- `BoseService` -- foreground service (RFCOMM commands, A2DP auto-accept)
+- `BoseWidgetProvider` -- home screen widget (5 device buttons)
+- `BoseTileService` -- Quick Settings tile (shows active source)
+- `DevicePickerActivity` -- dialog launched from QS tile
+- `BootReceiver` -- auto-start service on boot
+- Companion device registered for background FGS privileges
 
 ### Shared
 - `BoseRFCOMM.swift` -- Direct RFCOMM BMAP protocol (IOBluetooth, on-demand)
@@ -73,6 +77,7 @@ access verBosita?" prompt. Association persists across app reinstalls.
 - `REQUEST_COMPANION_RUN_IN_BACKGROUND`
 - `REQUEST_COMPANION_USE_DATA_IN_BACKGROUND`
 - `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND`
+- `FOREGROUND_SERVICE_CONNECTED_DEVICE` (required for `connectedDevice` service type)
 
 ### Widget (5 buttons: phone, mac, ipad, iphone, quest)
 
@@ -134,8 +139,8 @@ own MAC. Use `getConnectedDevices` (05,01) for audio-active devices and
 | mac | BC:D0:74:11:DB:27 | yes | MacBook |
 | ipad | F4:81:C4:B5:FA:AB | yes | Needs re-pairing |
 | iphone | F8:4D:89:C4:B6:ED | yes | |
+| tv | 14:C1:4E:B7:CB:68 | macOS only | Chromecast |
 | quest | 78:C4:FA:C8:5C:3D | yes | Meta Quest 3 |
-| tv | 14:C1:4E:B7:CB:68 | no | Chromecast (in protocol, not widget) |
 
 **Cycle order** (bose-ctl): `mac → quest → ipad → iphone → tv → phone`
 
@@ -166,7 +171,7 @@ BMAP operator (SET/0x06 instead of SET_GET/0x02).
 | 0x03 | RESP | Response from device |
 | 0x04 | ERROR | Error from device |
 | 0x05 | START | Connect/disconnect/media commands |
-| 0x06 | SET | Simple set (name, multipoint, volume). **Does NOT work for EQ** |
+| 0x06 | SET | Simple set (name only). **Does NOT work for EQ, volume, or multipoint** |
 | 0x07 | ACK | Acknowledgement |
 
 ### All Settable Commands (RFCOMM, verified)
@@ -174,17 +179,26 @@ BMAP operator (SET/0x06 instead of SET_GET/0x02).
 | Setting | Block,Func | Operator | Bytes | Notes |
 |---------|-----------|----------|-------|-------|
 | ANC mode | 1F,03 | START | `1F,03,05,02,{mode},01` | 0=quiet 1=aware 2=custom1 3=custom2 |
-| Volume | 05,05 | SET | `05,05,06,01,{level}` | 0-31 |
-| Device name | 01,02 | SET | `01,02,06,{len},00,{utf8}` | max 30 chars |
-| Multipoint | 01,0A | SET | `01,0A,06,01,{07/00}` | 07=on, 00=off |
+| Volume | 05,05 | SET_GET | `05,05,02,01,{level}` | 0-31 |
+| Device name | 01,02 | SET | `01,02,06,{len},00,{utf8}` | max 30 UTF-8 bytes |
+| Multipoint | 01,0A | SET_GET | `01,0A,02,01,{07/00}` | 07=on, 00=off |
 | Connect device | 04,01 | START | `04,01,05,07,00,{MAC}` | Also routes audio |
 | Disconnect | 04,02 | START | `04,02,05,06,{MAC}` | |
 | Media control | 05,03 | START | `05,03,05,01,{action}` | 01=play 02=pause 03=next 04=prev |
 | **EQ band** | 01,07 | **SET_GET** | `01,07,02,02,{value},{band}` | band: 0=bass 1=mid 2=treble, value: signed -10 to +10 |
 | **ANC depth** | 1F,0A | **SET_GET** | `1F,0A,02,05,{level},{autoCNC},{spatial},{windBlock},{ancToggle}` | level 0-10. Read current first, change level, preserve others. |
 
-**Not supported on QC Ultra 2:** StandbyTimer (01,04), MotionAutoOff (01,14), OnHeadDetection SET (01,10).
-Auto-off timer is read-only over RFCOMM on this product.
+**Not supported on QC Ultra 2:** StandbyTimer SET (01,04), MotionAutoOff (01,14), OnHeadDetection SET (01,10).
+Auto-off timer (01,0B) is read-only over RFCOMM — distinct from StandbyTimer (01,04).
+
+### BMAP Function IDs (Block 0x05 — Audio)
+
+| Function | ID | Notes |
+|----------|-----|-------|
+| ConnectedDevices | **0x01** | GET returns audio-active device MACs (ground truth) |
+| MediaControl | 0x03 | START: 01=play 02=pause 03=next 04=prev |
+| AudioCodec | 0x04 | GET returns codec ID + bitrate |
+| Volume | **0x05** | GET/SET_GET: current + max level (0-31) |
 
 ## Rules
 

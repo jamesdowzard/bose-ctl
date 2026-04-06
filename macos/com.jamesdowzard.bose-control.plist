@@ -11,8 +11,8 @@
 	<key>KeepAlive</key>
 	<true/>
 	<key>StandardOutPath</key>
-	<string>/tmp/bose-control.log</string>
+	<string>/Users/jamesdowzard/Library/Logs/bose-control.log</string>
 	<key>StandardErrorPath</key>
-	<string>/tmp/bose-control.log</string>
+	<string>/Users/jamesdowzard/Library/Logs/bose-control.log</string>
 </dict>
 </plist>

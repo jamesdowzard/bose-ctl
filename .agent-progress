@@ -1,10 +1,10 @@
-# Agent Progress - cleanup-and-docs
+# Agent Progress - audit-remediation
 # Format: KEY=VALUE, one per line. Agents append, last value wins.
-# Created: 2026-04-06T02:44:22Z
+# Created: 2026-04-06T02:54:38Z
 
-feature=cleanup-and-docs
-name=Clean up pre-O code paths, document architecture and companion setup
+feature=audit-remediation
+name=Fix audit findings — correctness, dead code, refactoring, docs
 status=pending
 step=0
 step_name=Not started
-created=2026-04-06T02:44:22Z
+created=2026-04-06T02:54:38Z

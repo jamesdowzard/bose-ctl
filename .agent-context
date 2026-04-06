@@ -2,8 +2,8 @@
 # Max 20 lines. Updated by agent on Stop hook.
 
 ## Feature
-Clean up pre-O code paths, document architecture and companion setup
-Clean up pre-O code paths, document architecture and companion setup
+Fix audit findings — correctness, dead code, refactoring, docs
+Fix audit findings — correctness, dead code, refactoring, docs
 
 ## Current State
 Not started. No work has been done yet.
