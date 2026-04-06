@@ -41,9 +41,6 @@ class BoseManager: ObservableObject {
 
     @Published var isRefreshing: Bool = false
 
-    /// Callback for AppDelegate to update menu bar display
-    var onStateChange: (() -> Void)?
-
     // MARK: - Private
 
     private var bose: BoseRFCOMM?
@@ -115,7 +112,6 @@ class BoseManager: ObservableObject {
                         }
                     }
 
-                    self.onStateChange?()
                 }
             }
         }
@@ -174,7 +170,6 @@ class BoseManager: ObservableObject {
                         }
                     }
                     self.isRefreshing = false
-                    self.onStateChange?()
                 }
             }
         }
@@ -248,7 +243,6 @@ class BoseManager: ObservableObject {
         }
 
         self.isRefreshing = false
-        self.onStateChange?()
     }
 
     // MARK: - Commands
@@ -262,7 +256,6 @@ class BoseManager: ObservableObject {
             if success {
                 DispatchQueue.main.async {
                     self.ancMode = mode
-                    self.onStateChange?()
                 }
             }
         }
@@ -275,7 +268,6 @@ class BoseManager: ObservableObject {
             if success {
                 DispatchQueue.main.async {
                     self.volume = level
-                    self.onStateChange?()
                 }
             }
         }
@@ -346,7 +338,6 @@ class BoseManager: ObservableObject {
             if success {
                 DispatchQueue.main.async {
                     self.eq = (bass: bass, mid: mid, treble: treble)
-                    self.onStateChange?()
                 }
             }
         }
@@ -371,7 +362,6 @@ class BoseManager: ObservableObject {
             if success {
                 DispatchQueue.main.async {
                     self.cncLevel = level
-                    self.onStateChange?()
                 }
             }
         }

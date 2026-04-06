@@ -1,13 +1,16 @@
-/// BoseControl: Native macOS menu bar app for Bose QC Ultra 2
-/// Replaces Hammerspoon bar, Raycast toggle, and bosed daemon.
+/// BoseControl: Native macOS app for Bose QC Ultra 2
 
 import SwiftUI
 
 @main
 struct BoseControlApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
+    @StateObject private var manager = BoseManager()
 
     var body: some Scene {
-        Settings { }  // Menu bar only — no main window
+        WindowGroup {
+            ContentView(manager: manager)
+                .onAppear { manager.startPolling() }
+        }
+        .defaultSize(width: 380, height: 600)
     }
 }

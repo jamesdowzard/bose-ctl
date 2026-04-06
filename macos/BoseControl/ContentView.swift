@@ -1,5 +1,5 @@
-/// PopoverView: Main SwiftUI interface shown from menu bar click or Option+B.
-/// Dark theme, ~320px wide, sections: header, devices, ANC, volume, settings, info.
+/// ContentView: Main SwiftUI interface for Bose headphone control.
+/// Dark theme, sections: header, devices, ANC, volume, EQ, settings, info.
 
 import SwiftUI
 import Combine
@@ -31,7 +31,7 @@ private let deviceButtons: [DeviceButton] = [
 
 // MARK: - Main View
 
-struct PopoverView: View {
+struct ContentView: View {
     @ObservedObject var manager: BoseManager
     @State private var showSettings = false
     @State private var showInfo = false
@@ -60,12 +60,14 @@ struct PopoverView: View {
             }
             .padding(16)
         }
-        .frame(width: 320)
+        .frame(maxWidth: .infinity)
         .background(bgColor)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Bose")
-        .accessibilityIdentifier("bose-control-popover")
-        .onAppear { syncSliders() }
+        .onAppear {
+            syncSliders()
+            manager.refreshState()
+        }
         .onReceive(manager.objectWillChange) { _ in
             DispatchQueue.main.async { syncSliders() }
         }
