@@ -2,8 +2,8 @@
 # Max 20 lines. Updated by agent on Stop hook.
 
 ## Feature
-Extract Swift helpers, fix CLI EQ, deduplicate runBlueutil
-Extract Swift helpers, fix CLI EQ, deduplicate runBlueutil
+Final cleanup — getAllState, deprecated APIs, release build, blueutil replacement
+Final cleanup — getAllState, deprecated APIs, release build, blueutil replacement
 
 ## Current State
 Not started. No work has been done yet.

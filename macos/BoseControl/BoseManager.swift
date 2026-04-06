@@ -3,6 +3,7 @@
 
 import Foundation
 import Combine
+import IOBluetooth
 
 class BoseManager: ObservableObject {
 
@@ -379,11 +380,14 @@ class BoseManager: ObservableObject {
     // MARK: - Bluetooth Helpers
 
     private func isBluetoothConnected() -> Bool {
-        let (status, output) = runBlueutil(["--is-connected", boseMac])
-        return status == 0 && output.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+        // Native IOBluetooth — no subprocess spawn needed for polling
+        let dashMac = boseMac.replacingOccurrences(of: ":", with: "-")
+        guard let device = IOBluetoothDevice(addressString: dashMac) else { return false }
+        return device.isConnected()
     }
 
     private func btConnect() {
+        // A2DP profile connect requires blueutil — IOBluetooth doesn't expose A2DP control
         runBlueutil(["--connect", boseMac])
     }
 
