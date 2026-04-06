@@ -28,6 +28,12 @@ object BoseProtocol {
 
     private const val TAG = "BoseProtocol"
 
+    /** Centralized adapter access. getDefaultAdapter() is deprecated but still
+     *  the only option for context-free singletons. Works on all API levels. */
+    @Suppress("DEPRECATION")
+    private val adapter: BluetoothAdapter?
+        get() = adapter
+
     const val BOSE_MAC = "E4:58:BC:C0:2F:72"
 
     // SPP UUID for BMAP over RFCOMM
@@ -73,7 +79,7 @@ object BoseProtocol {
         rfcommLock.lock()
         closeSocket()
 
-        val adapter = BluetoothAdapter.getDefaultAdapter() ?: run {
+        val adapter = adapter ?: run {
             Log.e(TAG, "No Bluetooth adapter")
             rfcommLock.unlock()
             return false

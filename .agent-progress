@@ -1,10 +1,10 @@
-# Agent Progress - mac-cleanup
+# Agent Progress - final-polish
 # Format: KEY=VALUE, one per line. Agents append, last value wins.
-# Created: 2026-04-06T03:12:12Z
+# Created: 2026-04-06T03:24:51Z
 
-feature=mac-cleanup
-name=Extract Swift helpers, fix CLI EQ, deduplicate runBlueutil
+feature=final-polish
+name=Final cleanup — getAllState, deprecated APIs, release build, blueutil replacement
 status=pending
 step=0
 step_name=Not started
-created=2026-04-06T03:12:12Z
+created=2026-04-06T03:24:51Z

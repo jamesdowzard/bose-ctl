@@ -1,5 +1,6 @@
 package au.com.jd.bose
 
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -52,8 +53,11 @@ class BoseTileService : TileService() {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             activeDevice?.let { putExtra("current_device", it) }
         }
-        @Suppress("DEPRECATION")
-        startActivityAndCollapse(intent)
+        val pi = PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        startActivityAndCollapse(pi)
     }
 
     private fun refreshStatus() {

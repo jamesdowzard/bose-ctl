@@ -9,6 +9,7 @@ import android.app.Service
 import android.bluetooth.BluetoothA2dp
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -148,7 +149,7 @@ class BoseService : Service() {
 
     @SuppressLint("MissingPermission")
     private fun setupA2dpProxy() {
-        val adapter = BluetoothAdapter.getDefaultAdapter() ?: return
+        val adapter = getSystemService(BluetoothManager::class.java)?.adapter ?: return
         adapter.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
             override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
                 if (profile == BluetoothProfile.A2DP) {
@@ -245,7 +246,7 @@ class BoseService : Service() {
                 // Note: don't connect HFP here — SCO blocks A2DP streaming.
                 // HFP connects automatically when a phone call arrives.
                 if (deviceName == "phone") {
-                    val adapter = BluetoothAdapter.getDefaultAdapter()
+                    val adapter = getSystemService(BluetoothManager::class.java)?.adapter
                     val boseDevice = adapter?.getRemoteDevice(BoseProtocol.BOSE_MAC)
                     if (boseDevice != null) {
                         Log.i(TAG, "Proactively connecting A2DP for local device")
@@ -354,7 +355,7 @@ class BoseService : Service() {
     override fun onDestroy() {
         try { unregisterReceiver(aclReceiver) } catch (_: Exception) {}
         a2dpProxy?.let {
-            BluetoothAdapter.getDefaultAdapter()?.closeProfileProxy(BluetoothProfile.A2DP, it)
+            getSystemService(BluetoothManager::class.java)?.adapter?.closeProfileProxy(BluetoothProfile.A2DP, it)
         }
         executor.shutdownNow()
         BoseProtocol.disconnect()
