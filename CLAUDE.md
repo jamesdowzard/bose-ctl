@@ -29,13 +29,13 @@ simultaneously one waits, but in practice commands are too brief to collide.
 ### Android (`android/`)
 - `android/` -- Jetpack Compose app (package: `au.com.jd.bose`)
 - Foreground service, home screen widget, Quick Settings tile
-- A2DP auto-accept, boot receiver
+- Companion device registered, A2DP auto-accept, boot receiver
 
 ### Shared
 - `BoseRFCOMM.swift` -- Direct RFCOMM BMAP protocol (IOBluetooth, on-demand)
 - `BoseCtl.swift` -- CLI using BoseRFCOMM directly
 
-## Build
+## Build & Deploy
 
 ```bash
 # bose-ctl (CLI)
@@ -43,18 +43,101 @@ swiftc -O BoseRFCOMM.swift BoseCtl.swift -framework IOBluetooth -o ~/bin/bose-ct
 
 # Mac app
 cd macos && ./build.sh
+
+# Android app (deploy to S21 via ADB)
+cd android && ./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+Note: `android/local.properties` needs `sdk.dir=/Users/jamesdowzard/Library/Android/sdk`.
+This file is gitignored. Worktrees need it copied manually.
+
+## Android Architecture
+
+### Companion Device (Critical)
+
+The app registers as a **companion device** for the Bose headphones via
+`CompanionDeviceManager`. This is essential — without it, Android 12+ blocks
+starting foreground services from the background, which breaks the widget.
+
+**What it grants:**
+- Background FGS starts (widget taps can start BoseService)
+- Battery optimization exemption (service stays alive)
+- Wake on BT connect/disconnect
+
+**Setup:** Automatic on first app launch. User sees a one-time "Allow Bose to
+access verBosita?" prompt. Association persists across app reinstalls.
+
+**Manifest requirements:**
+- `<uses-feature android:name="android.software.companion_device_setup" />`
+- `REQUEST_COMPANION_RUN_IN_BACKGROUND`
+- `REQUEST_COMPANION_USE_DATA_IN_BACKGROUND`
+- `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND`
+
+### Widget (5 buttons: phone, mac, ipad, iphone, quest)
+
+Buttons use `PendingIntent.getForegroundService()` to send `ACTION_CONNECT_DEVICE`
+directly to `BoseService`. No broadcast receiver in the click path.
+
+**State colors:**
+- Green (#00FF88) = active (audio routed here)
+- Orange (#FF9500) = connected but not active
+- Grey (#666666) = offline/not connected
+
+Battery percentage shown as overlay text.
+
+### BoseService (Foreground Service)
+
+Single-threaded executor runs all RFCOMM operations off the main thread.
+Key actions: `ACTION_CONNECT_DEVICE`, `ACTION_REFRESH`.
+
+**On device switch to "phone":**
+1. BMAP connectDevice(phone_mac) -- tells headphones to route audio to phone
+2. ensureA2dp(boseDevice) -- phone-side A2DP connect (Samsung needs this)
+3. 500ms wait for BT to settle
+4. nudgeMediaPlayback() -- pause/play to force audio stream handover
+
+**Skip-if-active:** Tapping an already-active device is a no-op (checks SharedPrefs).
+
+### Key Lessons (Don't Repeat These Mistakes)
+
+**HFP blocks A2DP:** Never proactively connect HFP (BluetoothHeadset profile).
+SCO occupies the BT bandwidth and A2DP streaming fails with `sco_occupied:true`.
+HFP connects automatically when a phone call arrives — let Android handle it.
+
+**Media nudge is required:** After BT output changes, existing media playback
+keeps streaming to the old sink. Must pause/play to force re-routing. Only
+triggers if `AudioManager.isMusicActive` is true.
+
+**Widget → BroadcastReceiver → startForegroundService crashes on Android 12+:**
+`ForegroundServiceStartNotAllowedException`. Widget clicks must go directly to
+the service via `PendingIntent.getForegroundService()`, not through a broadcast
+receiver that tries to start the service.
+
+**Companion device association API differs by Android version:**
+- API 33+: `cdm.associate(request, executor, callback)` with
+  `onAssociationCreated` / `onAssociationPending` / `onFailure`
+- API 31-32: `cdm.associate(request, callback, handler)` with
+  `onDeviceFound(IntentSender)` / `onFailure`
+- Check existing: API 33+ uses `cdm.myAssociations`, older uses `cdm.associations`
+- Requires `<uses-feature android:name="android.software.companion_device_setup" />`
+
+**getActiveDevice (04,09) is unreliable:** Always returns the querying device's
+own MAC. Use `getConnectedDevices` (05,01) for audio-active devices and
+`getDeviceInfo` (04,05) per device for ACL connection state.
 
 ## Device Map
 
-| Name | MAC | Notes |
-|------|-----|-------|
-| mac | BC:D0:74:11:DB:27 | MacBook |
-| phone | A8:76:50:D3:B1:1B | Samsung S21 |
-| ipad | F4:81:C4:B5:FA:AB | Currently needs re-pairing |
-| iphone | F8:4D:89:C4:B6:ED | |
-| tv | 14:C1:4E:B7:CB:68 | Chromecast |
-| quest | 78:C4:FA:C8:5C:3D | Meta Quest 3 |
+| Name | MAC | Widget | Notes |
+|------|-----|--------|-------|
+| phone | A8:76:50:D3:B1:1B | yes | Samsung S21 (local device) |
+| mac | BC:D0:74:11:DB:27 | yes | MacBook |
+| ipad | F4:81:C4:B5:FA:AB | yes | Needs re-pairing |
+| iphone | F8:4D:89:C4:B6:ED | yes | |
+| quest | 78:C4:FA:C8:5C:3D | yes | Meta Quest 3 |
+| tv | 14:C1:4E:B7:CB:68 | no | Chromecast (in protocol, not widget) |
+
+**Cycle order** (bose-ctl): `mac → quest → ipad → iphone → tv → phone`
 
 ## BMAP Function IDs (Block 0x04 — DeviceManagement)
 
@@ -103,16 +186,10 @@ BMAP operator (SET/0x06 instead of SET_GET/0x02).
 **Not supported on QC Ultra 2:** StandbyTimer (01,04), MotionAutoOff (01,14), OnHeadDetection SET (01,10).
 Auto-off timer is read-only over RFCOMM on this product.
 
-### ActiveDevice (04,09) is UNRELIABLE
-
-`04,09` always returns the querying device's own MAC, not the actual audio source.
-Do NOT use it for determining which device is streaming. Instead:
-- `05,01` (getConnectedDevices) = audio-connected devices → show as "active" (green)
-- `04,05` (getDeviceInfo per device) = ACL-connected → show as "connected" (orange)
-
 ## Rules
 
 - **NEVER unpair/toggle BT/pairing mode without explicit user approval** — broke pairings on 2026-03-16
+- **NEVER proactively connect HFP** — SCO blocks A2DP streaming
 - **Verify state changes with the user**, not just the protocol response
 - **Bose Music app must be disabled** — fights for RFCOMM: `adb shell pm disable-user com.bose.bosemusic`
 - 2-device multipoint limit
@@ -120,3 +197,4 @@ Do NOT use it for determining which device is streaming. Instead:
 - Single RFCOMM attempt per command — no retry loops
 - Drain 300ms of initial data after RFCOMM connect (Bose firmware quirk)
 - Use pymobiledevice3 for iPad BT operations
+- minSdk 31 (Android 12) — no pre-O version checks needed

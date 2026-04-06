@@ -3,7 +3,6 @@ package au.com.jd.bose
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
 
 /**
@@ -25,15 +24,10 @@ class DevicePickerActivity : Activity() {
             .setTitle("Switch Bose Source")
             .setItems(labels) { _, which ->
                 val selected = deviceNames[which]
-                val serviceIntent = Intent(this, BoseService::class.java).apply {
+                startForegroundService(Intent(this, BoseService::class.java).apply {
                     action = BoseService.ACTION_CONNECT_DEVICE
                     putExtra(BoseService.EXTRA_DEVICE_NAME, selected)
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(serviceIntent)
-                } else {
-                    startService(serviceIntent)
-                }
+                })
                 finish()
             }
             .setNegativeButton("Cancel") { _, _ -> finish() }

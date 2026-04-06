@@ -1,28 +1,21 @@
 package au.com.jd.bose
 
-import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.drawable.Icon
-import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
-import android.util.Log
 
 /**
  * Quick Settings tile for Bose source switching.
  *
  * - Shows current active source as subtitle
  * - Tapping opens DevicePickerActivity dialog
- * - Long-press refreshes status
+ * - Listens for status broadcasts from BoseService
  */
 class BoseTileService : TileService() {
-
-    companion object {
-        private const val TAG = "BoseTile"
-    }
 
     private var activeDevice: String? = null
 
@@ -38,15 +31,13 @@ class BoseTileService : TileService() {
         }
     }
 
-    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     override fun onStartListening() {
         super.onStartListening()
-        val filter = IntentFilter(BoseService.BROADCAST_STATUS)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(statusReceiver, filter)
-        }
+        registerReceiver(
+            statusReceiver,
+            IntentFilter(BoseService.BROADCAST_STATUS),
+            Context.RECEIVER_NOT_EXPORTED,
+        )
         refreshStatus()
     }
 
@@ -61,27 +52,23 @@ class BoseTileService : TileService() {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             activeDevice?.let { putExtra("current_device", it) }
         }
+        @Suppress("DEPRECATION")
         startActivityAndCollapse(intent)
     }
 
     private fun refreshStatus() {
-        val intent = Intent(this, BoseService::class.java).apply {
-            action = BoseService.ACTION_REFRESH
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
-        }
+        try {
+            startForegroundService(Intent(this, BoseService::class.java).apply {
+                action = BoseService.ACTION_REFRESH
+            })
+        } catch (_: Exception) {}
     }
 
     private fun updateTile() {
         val tile = qsTile ?: return
         tile.state = if (activeDevice != null) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.label = "Bose"
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            tile.subtitle = activeDevice ?: "..."
-        }
+        tile.subtitle = activeDevice ?: "..."
         tile.icon = Icon.createWithResource(this, R.drawable.ic_headphones)
         tile.updateTile()
     }
