@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build Bose Control.app — native macOS menu bar app
+# Build Bose Control.app — native macOS windowed app
 # Requires: Xcode command line tools (xcode-select --install)
 set -euo pipefail
 
@@ -29,12 +29,11 @@ swiftc -O \
     "$SCRIPT_DIR/BoseControl/BoseApp.swift" \
     "$SCRIPT_DIR/BoseControl/AppDelegate.swift" \
     "$SCRIPT_DIR/BoseControl/BoseManager.swift" \
-    "$SCRIPT_DIR/BoseControl/PopoverView.swift" \
+    "$SCRIPT_DIR/BoseControl/ContentView.swift" \
     -framework IOBluetooth \
     -framework CoreBluetooth \
     -framework SwiftUI \
     -framework AppKit \
-    -framework Carbon \
     -o "$MACOS_DIR/$APP_NAME" \
     -Xlinker -rpath -Xlinker @executable_path/../Frameworks
 

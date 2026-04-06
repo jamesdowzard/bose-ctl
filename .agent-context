@@ -2,8 +2,8 @@
 # Max 20 lines. Updated by agent on Stop hook.
 
 ## Feature
-Final cleanup — getAllState, deprecated APIs, release build, blueutil replacement
-Final cleanup — getAllState, deprecated APIs, release build, blueutil replacement
+Convert macOS app from menu bar to windowed UI
+Convert macOS app from menu bar to windowed UI
 
 ## Current State
 Not started. No work has been done yet.
