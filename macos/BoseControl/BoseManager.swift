@@ -47,10 +47,6 @@ class BoseManager: ObservableObject {
     private var boseReady = false
     private let rfcommQueue = DispatchQueue(label: "com.jamesdowzard.bose-control.rfcomm")
     private var pollTimer: Timer?
-    private var reconnectTimer: Timer?
-    private var disconnectedAt: Date?
-    private let reconnectWindow: TimeInterval = 30.0
-    private let reconnectInterval: TimeInterval = 3.0
     private let pollInterval: TimeInterval = 10.0
 
     private let boseMac = "E4:58:BC:C0:2F:72"
@@ -77,8 +73,6 @@ class BoseManager: ObservableObject {
     func stopPolling() {
         pollTimer?.invalidate()
         pollTimer = nil
-        reconnectTimer?.invalidate()
-        reconnectTimer = nil
     }
 
     // MARK: - Connection Check
@@ -92,73 +86,17 @@ class BoseManager: ObservableObject {
                 let state = bose.getAllState()
                 DispatchQueue.main.async {
                     self.isConnected = true
-                    self.disconnectedAt = nil
-                    self.reconnectTimer?.invalidate()
-                    self.reconnectTimer = nil
                     self.applyState(state)
                 }
             } else {
                 DispatchQueue.main.async {
-                    let wasConnected = self.isConnected
                     self.isConnected = connected
-
                     if !connected {
-                        if wasConnected && self.disconnectedAt == nil {
-                            self.disconnectedAt = Date()
-                            self.startReconnectTimer()
-                        }
                         for key in self.deviceStates.keys {
                             self.deviceStates[key] = "offline"
                         }
                     }
-
                 }
-            }
-        }
-    }
-
-    // MARK: - Auto-Reconnect
-
-    private func startReconnectTimer() {
-        reconnectTimer?.invalidate()
-        reconnectTimer = Timer.scheduledTimer(withTimeInterval: reconnectInterval, repeats: true) { [weak self] timer in
-            guard let self = self else { timer.invalidate(); return }
-
-            if let disconnectTime = self.disconnectedAt {
-                let elapsed = Date().timeIntervalSince(disconnectTime)
-                if elapsed >= self.reconnectWindow {
-                    // Window expired — stop trying
-                    timer.invalidate()
-                    self.reconnectTimer = nil
-                    self.disconnectedAt = nil
-                    return
-                }
-            }
-
-            // Try reconnect — but first check whether the headphones are
-            // currently routing audio to a different device (e.g. user
-            // switched to phone/iPad from elsewhere). If so, do NOT yank
-            // audio back to Mac. RFCOMM opens its own ACL, so this works
-            // even while Mac is A2DP-disconnected.
-            self.rfcommQueue.async {
-                if self.boseReady, let bose = self.bose {
-                    let active = bose.getConnectedDevices()
-                    let macMacBytes = bose.macForName("mac")
-                    let otherDeviceActive = active.contains { mac in
-                        macMacBytes == nil || mac != macMacBytes!
-                    }
-                    if otherDeviceActive {
-                        // User intentionally routed audio elsewhere —
-                        // cancel the reconnect window so we stop fighting it.
-                        DispatchQueue.main.async {
-                            self.reconnectTimer?.invalidate()
-                            self.reconnectTimer = nil
-                            self.disconnectedAt = nil
-                        }
-                        return
-                    }
-                }
-                self.btConnect()
             }
         }
     }
@@ -395,11 +333,6 @@ class BoseManager: ObservableObject {
         let dashMac = boseMac.replacingOccurrences(of: ":", with: "-")
         guard let device = IOBluetoothDevice(addressString: dashMac) else { return false }
         return device.isConnected()
-    }
-
-    private func btConnect() {
-        // A2DP profile connect requires blueutil — IOBluetooth doesn't expose A2DP control
-        runBlueutil(["--connect", boseMac])
     }
 
     // MARK: - Computed Properties
