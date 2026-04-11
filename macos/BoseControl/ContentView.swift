@@ -1,16 +1,17 @@
-/// ContentView: Main SwiftUI interface for Bose headphone control.
-/// Dark theme, sections: header, devices, ANC, volume, EQ, settings, info.
+/// ContentView: Frosted-dark two-panel layout for Bose headphone control.
+/// Left panel = status sidebar (220px), right panel = device grid + EQ.
+/// Uses NSVisualEffectView for macOS vibrancy/translucency.
 
 import SwiftUI
-import Combine
 
-// MARK: - Color Constants
+// MARK: - Theme Colors
 
-private let bgColor = Color(red: 0.1, green: 0.1, blue: 0.1)          // #1A1A1A
-private let cardColor = Color(red: 0.15, green: 0.15, blue: 0.15)     // #262626
-private let accentGreen = Color(red: 0, green: 1.0, blue: 0.533)      // #00FF88
-private let textPrimary = Color.white
-private let textSecondary = Color(white: 0.6)
+/// No neon green. White/light grey for active, warm grey for secondary, 40% opacity grey for offline.
+private let activeColor = Color.white
+private let secondaryColor = Color(white: 0.55)
+private let offlineColor = Color(white: 0.4)
+private let cardColor = Color.white.opacity(0.06)
+private let dividerColor = Color.white.opacity(0.08)
 
 // MARK: - Device Button Model
 
@@ -21,109 +22,203 @@ private struct DeviceButton: Identifiable {
 }
 
 private let deviceButtons: [DeviceButton] = [
-    DeviceButton(id: "phone", label: "Phone", symbol: "iphone"),
     DeviceButton(id: "mac", label: "Mac", symbol: "laptopcomputer"),
+    DeviceButton(id: "phone", label: "Phone", symbol: "iphone"),
     DeviceButton(id: "ipad", label: "iPad", symbol: "ipad"),
     DeviceButton(id: "iphone", label: "iPhone", symbol: "iphone"),
     DeviceButton(id: "tv", label: "TV", symbol: "tv"),
     DeviceButton(id: "quest", label: "Quest", symbol: "visionpro"),
 ]
 
+// MARK: - Visual Effect Background
+
+/// NSViewRepresentable wrapping NSVisualEffectView with .hudWindow material
+/// for macOS dark vibrancy/translucency.
+struct VisualEffectBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .hudWindow
+        view.blendingMode = .behindWindow
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+}
+
 // MARK: - Main View
 
 struct ContentView: View {
     @ObservedObject var manager: BoseManager
-    @State private var showSettings = false
-    @State private var showInfo = false
-    @State private var editingName = false
-    @State private var nameField: String = ""
-    @State private var volumeSliderValue: Double = 0
-    @State private var eqBass: Double = 0
-    @State private var eqMid: Double = 0
-    @State private var eqTreble: Double = 0
-    @State private var cncSliderValue: Double = 0
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                headerSection
-                if manager.isConnected {
-                    devicesSection
-                    ancSection
-                    volumeSection
-                    eqSection
-                    settingsSection
-                    infoSection
-                } else {
-                    disconnectedView
-                }
+        Group {
+            if manager.isConnected {
+                connectedLayout
+            } else {
+                disconnectedView
             }
-            .padding(16)
         }
-        .frame(maxWidth: .infinity)
-        .background(bgColor)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Bose")
+        .frame(width: 640, height: 360)
+        .background(VisualEffectBackground())
         .onAppear {
-            syncSliders()
             manager.refreshState()
-        }
-        .onReceive(manager.objectWillChange) { _ in
-            DispatchQueue.main.async { syncSliders() }
         }
     }
 
-    // MARK: - Header
+    // MARK: - Connected Layout
 
-    private var headerSection: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
+    private var connectedLayout: some View {
+        HStack(spacing: 0) {
+            // Left panel — status sidebar
+            leftPanel
+                .frame(width: 220)
+
+            // Divider
+            Rectangle()
+                .fill(dividerColor)
+                .frame(width: 1)
+
+            // Right panel — device grid + EQ
+            rightPanel
+                .frame(maxWidth: .infinity)
+        }
+        .padding(.top, 28)  // clear transparent title bar
+    }
+
+    // MARK: - Left Panel (Status Sidebar)
+
+    private var leftPanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Device name + battery
+            VStack(alignment: .leading, spacing: 4) {
                 Text(manager.deviceName)
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(textPrimary)
-                    .accessibilityLabel("Device name: \(manager.deviceName)")
+                    .foregroundColor(activeColor)
 
-                if manager.isConnected {
-                    HStack(spacing: 6) {
-                        batteryView
-                        if manager.isRefreshing {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .frame(width: 12, height: 12)
-                                .accessibilityLabel("Refreshing state")
-                        }
+                HStack(spacing: 6) {
+                    Image(systemName: batteryIcon)
+                        .font(.system(size: 11))
+                        .foregroundColor(batteryColor)
+                    Text("\(manager.batteryLevel)%")
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(batteryColor)
+                    if manager.batteryCharging {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.orange)
                     }
-                } else {
-                    Text("Disconnected")
+                }
+            }
+
+            // ANC mode
+            VStack(alignment: .leading, spacing: 4) {
+                Text("NOISE CONTROL")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(secondaryColor)
+                    .tracking(1)
+                Text(manager.ancModeName)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(activeColor)
+            }
+
+            // Volume
+            VStack(alignment: .leading, spacing: 4) {
+                Text("VOLUME")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(secondaryColor)
+                    .tracking(1)
+                Text("\(manager.volume) / \(manager.volumeMax)")
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .foregroundColor(activeColor)
+            }
+
+            // Wear detection
+            VStack(alignment: .leading, spacing: 4) {
+                Text("STATUS")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(secondaryColor)
+                    .tracking(1)
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(manager.onHead ? Color.green : Color.orange)
+                        .frame(width: 6, height: 6)
+                    Text(manager.onHead ? "On head" : "Off head")
                         .font(.system(size: 12))
-                        .foregroundColor(textSecondary)
-                        .accessibilityLabel("Connection status: Disconnected")
+                        .foregroundColor(activeColor)
                 }
             }
 
             Spacer()
+        }
+        .padding(16)
+    }
 
-            if manager.isConnected {
-                ancPill
+    // MARK: - Right Panel (Device Grid + EQ Placeholder)
+
+    private var rightPanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Devices
+            Text("DEVICES")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(secondaryColor)
+                .tracking(1)
+
+            Text("Device grid placeholder")
+                .font(.system(size: 12))
+                .foregroundColor(secondaryColor)
+
+            Spacer()
+
+            // EQ
+            Text("EQUALIZER")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(secondaryColor)
+                .tracking(1)
+
+            Text("EQ controls placeholder")
+                .font(.system(size: 12))
+                .foregroundColor(secondaryColor)
+
+            Spacer()
+        }
+        .padding(16)
+    }
+
+    // MARK: - Disconnected View
+
+    private var disconnectedView: some View {
+        VStack(spacing: 16) {
+            Spacer()
+
+            Image(systemName: "headphones")
+                .font(.system(size: 48, weight: .thin))
+                .foregroundColor(offlineColor)
+
+            Text("Not Connected")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundColor(secondaryColor)
+
+            Button(action: {
+                manager.connectDevice("mac")
+            }) {
+                Text("Connect")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 8)
+                    .background(activeColor)
+                    .cornerRadius(8)
             }
+            .buttonStyle(.plain)
+
+            Spacer()
         }
-        .padding(.bottom, 4)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Header")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.top, 28)
     }
 
-    private var batteryView: some View {
-        HStack(spacing: 3) {
-            Image(systemName: manager.batteryCharging ? "bolt.fill" : batteryIcon)
-                .font(.system(size: 11))
-                .foregroundColor(batteryColor)
-            Text("\(manager.batteryLevel)%")
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .foregroundColor(batteryColor)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Battery level: \(manager.batteryLevel) percent\(manager.batteryCharging ? ", charging" : "")")
-    }
+    // MARK: - Helpers
 
     private var batteryIcon: String {
         switch manager.batteryLevel {
@@ -136,469 +231,9 @@ struct ContentView: View {
     }
 
     private var batteryColor: Color {
-        if manager.batteryCharging { return accentGreen }
+        if manager.batteryCharging { return .green }
         if manager.batteryLevel < 15 { return .red }
         if manager.batteryLevel < 30 { return .orange }
-        return textPrimary
-    }
-
-    private var ancPill: some View {
-        Text(manager.ancModeName)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundColor(bgColor)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(accentGreen)
-            .cornerRadius(12)
-            .accessibilityLabel("Current noise control mode: \(manager.ancModeName)")
-    }
-
-    // MARK: - Disconnected
-
-    private var disconnectedView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "headphones")
-                .font(.system(size: 40))
-                .foregroundColor(textSecondary)
-                .accessibilityLabel("Headphones icon")
-            Text("Headphones not connected")
-                .font(.system(size: 13))
-                .foregroundColor(textSecondary)
-                .accessibilityLabel("Headphones not connected")
-            Button(action: {
-                manager.connectDevice("mac")
-            }) {
-                Text("Connect")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(bgColor)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 8)
-                    .background(accentGreen)
-                    .cornerRadius(8)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Connect headphones to Mac")
-            .accessibilityIdentifier("connect-button")
-        }
-        .padding(.vertical, 20)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Disconnected view")
-    }
-
-    // MARK: - Devices
-
-    private var devicesSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("DEVICES")
-
-            HStack(spacing: 8) {
-                ForEach(deviceButtons) { device in
-                    deviceButton(device)
-                }
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Devices section")
-    }
-
-    private func deviceButton(_ device: DeviceButton) -> some View {
-        let state = manager.deviceStates[device.id] ?? "offline"
-        let actionVerb = (state == "active" || state == "connected") ? "Disconnect" : "Connect"
-
-        return Button(action: {
-            if state == "active" || state == "connected" {
-                manager.disconnectDevice(device.id)
-            } else {
-                manager.connectDevice(device.id)
-            }
-        }) {
-            VStack(spacing: 4) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(state == "active" ? accentGreen.opacity(0.15) : cardColor)
-                        .frame(width: 50, height: 44)
-
-                    Image(systemName: device.symbol)
-                        .font(.system(size: 18))
-                        .foregroundColor(
-                            state == "active" ? accentGreen :
-                            state == "connected" ? .orange :
-                            textSecondary
-                        )
-                }
-
-                HStack(spacing: 2) {
-                    Circle()
-                        .fill(
-                            state == "active" ? accentGreen :
-                            state == "connected" ? .orange :
-                            Color(white: 0.3)
-                        )
-                        .frame(width: 6, height: 6)
-                    Text(device.label)
-                        .font(.system(size: 9))
-                        .foregroundColor(textSecondary)
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity)
-        .accessibilityLabel("\(actionVerb) \(device.label), status: \(state)")
-        .accessibilityIdentifier("device-\(device.id)")
-    }
-
-    // MARK: - ANC
-
-    private var ancSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("NOISE CONTROL")
-
-            HStack(spacing: 0) {
-                ancButton("Quiet", mode: 0)
-                ancButton("Aware", mode: 1)
-                ancButton("C1", mode: 2)
-                ancButton("C2", mode: 3)
-            }
-            .background(cardColor)
-            .cornerRadius(8)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Noise control section")
-    }
-
-    private func ancButton(_ label: String, mode: Int) -> some View {
-        let isSelected = manager.ancMode == mode
-        let fullModeNames = ["Quiet", "Aware", "Custom 1", "Custom 2"]
-        let modeName = mode < fullModeNames.count ? fullModeNames[mode] : label
-
-        return Button(action: {
-            manager.setAncMode(mode)
-        }) {
-            Text(label)
-                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                .foregroundColor(isSelected ? bgColor : textSecondary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .background(isSelected ? accentGreen : Color.clear)
-                .cornerRadius(8)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Noise control: \(modeName)\(isSelected ? " (selected)" : "")")
-        .accessibilityIdentifier("anc-\(label.lowercased())")
-    }
-
-    // MARK: - Volume
-
-    private var volumeSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                sectionLabel("VOLUME")
-                Spacer()
-                Text("\(Int(volumeSliderValue))/\(manager.volumeMax)")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(textSecondary)
-                    .accessibilityLabel("Volume: \(Int(volumeSliderValue)) of \(manager.volumeMax)")
-            }
-
-            HStack(spacing: 8) {
-                Image(systemName: "speaker.fill")
-                    .font(.system(size: 11))
-                    .foregroundColor(textSecondary)
-                    .accessibilityLabel("Volume minimum")
-
-                Slider(value: $volumeSliderValue, in: 0...Double(manager.volumeMax), step: 1) { editing in
-                    if !editing {
-                        manager.setVolume(Int(volumeSliderValue))
-                    }
-                }
-                .accentColor(accentGreen)
-                .accessibilityLabel("Volume slider")
-                .accessibilityValue("\(Int(volumeSliderValue)) of \(manager.volumeMax)")
-                .accessibilityIdentifier("volume-slider")
-
-                Image(systemName: "speaker.wave.3.fill")
-                    .font(.system(size: 11))
-                    .foregroundColor(textSecondary)
-                    .accessibilityLabel("Volume maximum")
-            }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Volume section")
-    }
-
-    // MARK: - EQ
-
-    private var eqSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("EQUALIZER")
-
-            // Presets
-            HStack(spacing: 6) {
-                eqPresetButton("Flat", bass: 0, mid: 0, treble: 0)
-                eqPresetButton("Bass+", bass: 6, mid: 0, treble: -2)
-                eqPresetButton("Treble+", bass: -2, mid: 0, treble: 6)
-                eqPresetButton("Vocal", bass: -2, mid: 4, treble: 2)
-            }
-
-            // Sliders
-            eqSlider("Bass", value: $eqBass, band: 0)
-            eqSlider("Mid", value: $eqMid, band: 1)
-            eqSlider("Treble", value: $eqTreble, band: 2)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Equalizer section")
-    }
-
-    private func eqPresetButton(_ label: String, bass: Int, mid: Int, treble: Int) -> some View {
-        let isSelected = manager.eq.bass == bass && manager.eq.mid == mid && manager.eq.treble == treble
-        return Button(action: {
-            eqBass = Double(bass)
-            eqMid = Double(mid)
-            eqTreble = Double(treble)
-            manager.setEQ(bass: bass, mid: mid, treble: treble)
-        }) {
-            Text(label)
-                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                .foregroundColor(isSelected ? bgColor : textSecondary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
-                .background(isSelected ? accentGreen : cardColor)
-                .cornerRadius(6)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("EQ preset: \(label)\(isSelected ? " (selected)" : "")")
-    }
-
-    private func eqSlider(_ label: String, value: Binding<Double>, band: Int) -> some View {
-        HStack(spacing: 8) {
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundColor(textSecondary)
-                .frame(width: 42, alignment: .leading)
-
-            Slider(value: value, in: -10...10, step: 1) { editing in
-                if !editing {
-                    manager.setEQ(
-                        bass: Int(eqBass),
-                        mid: Int(eqMid),
-                        treble: Int(eqTreble)
-                    )
-                }
-            }
-            .accentColor(accentGreen)
-            .accessibilityLabel("\(label) equalizer")
-            .accessibilityValue("\(Int(value.wrappedValue))")
-
-            Text("\(Int(value.wrappedValue))")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(textPrimary)
-                .frame(width: 24, alignment: .trailing)
-        }
-    }
-
-    // MARK: - Settings
-
-    private var settingsSection: some View {
-        DisclosureGroup(
-            isExpanded: $showSettings,
-            content: {
-                VStack(spacing: 10) {
-                    // Device name
-                    HStack {
-                        Text("Name")
-                            .font(.system(size: 12))
-                            .foregroundColor(textSecondary)
-                        Spacer()
-                        if editingName {
-                            HStack(spacing: 4) {
-                                TextField("Name", text: $nameField)
-                                    .textFieldStyle(.plain)
-                                    .font(.system(size: 12))
-                                    .foregroundColor(textPrimary)
-                                    .frame(width: 120)
-                                    .padding(4)
-                                    .background(cardColor)
-                                    .cornerRadius(4)
-                                    .onSubmit {
-                                        manager.setDeviceName(nameField)
-                                        editingName = false
-                                    }
-                                    .accessibilityLabel("Device name text field")
-                                    .accessibilityIdentifier("device-name-field")
-                                Button("Save") {
-                                    manager.setDeviceName(nameField)
-                                    editingName = false
-                                }
-                                .font(.system(size: 10))
-                                .buttonStyle(.plain)
-                                .foregroundColor(accentGreen)
-                                .accessibilityLabel("Save device name")
-                                .accessibilityIdentifier("save-device-name")
-                            }
-                        } else {
-                            Button(action: {
-                                nameField = manager.deviceName
-                                editingName = true
-                            }) {
-                                Text(manager.deviceName)
-                                    .font(.system(size: 12))
-                                    .foregroundColor(textPrimary)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Edit device name: \(manager.deviceName)")
-                            .accessibilityIdentifier("edit-device-name")
-                        }
-                    }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel("Device name setting")
-
-                    // Multipoint toggle
-                    HStack {
-                        Text("Multipoint")
-                            .font(.system(size: 12))
-                            .foregroundColor(textSecondary)
-                        Spacer()
-                        Toggle("", isOn: Binding(
-                            get: { manager.multipointEnabled },
-                            set: { manager.setMultipoint($0) }
-                        ))
-                        .toggleStyle(.switch)
-                        .scaleEffect(0.7)
-                        .frame(width: 40)
-                        .accessibilityLabel("Multipoint toggle, \(manager.multipointEnabled ? "enabled" : "disabled")")
-                        .accessibilityIdentifier("multipoint-toggle")
-                    }
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel("Multipoint setting")
-
-                    // Auto-off timer
-                    settingsRow("Auto-off", value: manager.autoOffTimer.isEmpty ? "-" : manager.autoOffTimer)
-                        .accessibilityLabel("Auto-off timer: \(manager.autoOffTimer.isEmpty ? "not set" : manager.autoOffTimer)")
-
-                    // CNC Level (custom ANC depth)
-                    HStack(spacing: 8) {
-                        Text("ANC Depth")
-                            .font(.system(size: 12))
-                            .foregroundColor(textSecondary)
-                            .frame(width: 65, alignment: .leading)
-
-                        Slider(value: $cncSliderValue, in: 0...10, step: 1) { editing in
-                            if !editing {
-                                manager.setCncLevel(Int(cncSliderValue))
-                            }
-                        }
-                        .accentColor(accentGreen)
-
-                        Text("\(Int(cncSliderValue))")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(textPrimary)
-                            .frame(width: 20, alignment: .trailing)
-                    }
-                    .accessibilityLabel("ANC depth: \(Int(cncSliderValue))")
-
-                    // Wear detection
-                    HStack {
-                        Text("Wear Detection")
-                            .font(.system(size: 12))
-                            .foregroundColor(textSecondary)
-                        Spacer()
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(manager.onHead ? accentGreen : .orange)
-                                .frame(width: 6, height: 6)
-                            Text(manager.onHead ? "On head" : "Off head")
-                                .font(.system(size: 12))
-                                .foregroundColor(textPrimary)
-                        }
-                    }
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Wear detection: \(manager.onHead ? "on head" : "off head")")
-
-                }
-                .padding(.top, 8)
-            },
-            label: {
-                sectionLabel("SETTINGS")
-            }
-        )
-        .accentColor(textSecondary)
-        .accessibilityLabel("Settings section, \(showSettings ? "expanded" : "collapsed")")
-        .accessibilityIdentifier("settings-disclosure")
-    }
-
-    // MARK: - Info
-
-    private var infoSection: some View {
-        DisclosureGroup(
-            isExpanded: $showInfo,
-            content: {
-                VStack(spacing: 8) {
-                    infoRow("Firmware", value: manager.firmware)
-                        .accessibilityLabel("Firmware: \(manager.firmware.isEmpty ? "unknown" : manager.firmware)")
-                    infoRow("Serial", value: manager.serialNumber)
-                        .accessibilityLabel("Serial number: \(manager.serialNumber.isEmpty ? "unknown" : manager.serialNumber)")
-                    infoRow("Product", value: manager.productName)
-                        .accessibilityLabel("Product: \(manager.productName.isEmpty ? "unknown" : manager.productName)")
-                    infoRow("Platform", value: manager.platform)
-                        .accessibilityLabel("Platform: \(manager.platform.isEmpty ? "unknown" : manager.platform)")
-                    infoRow("Codename", value: manager.codename)
-                        .accessibilityLabel("Codename: \(manager.codename.isEmpty ? "unknown" : manager.codename)")
-                    infoRow("Codec", value: manager.audioCodec)
-                        .accessibilityLabel("Audio codec: \(manager.audioCodec.isEmpty ? "unknown" : manager.audioCodec)")
-                    infoRow("MAC", value: BOSE_MAC.replacingOccurrences(of: "-", with: ":"))
-                        .accessibilityLabel("MAC address: \(BOSE_MAC)")
-                }
-                .padding(.top, 8)
-            },
-            label: {
-                sectionLabel("INFO")
-            }
-        )
-        .accentColor(textSecondary)
-        .accessibilityLabel("Info section, \(showInfo ? "expanded" : "collapsed")")
-        .accessibilityIdentifier("info-disclosure")
-    }
-
-    // MARK: - Helpers
-
-    private func syncSliders() {
-        volumeSliderValue = Double(manager.volume)
-        eqBass = Double(manager.eq.bass)
-        eqMid = Double(manager.eq.mid)
-        eqTreble = Double(manager.eq.treble)
-        cncSliderValue = Double(manager.cncLevel)
-    }
-
-    private func sectionLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundColor(textSecondary)
-            .tracking(1)
-    }
-
-    private func settingsRow(_ label: String, value: String) -> some View {
-        HStack {
-            Text(label)
-                .font(.system(size: 12))
-                .foregroundColor(textSecondary)
-            Spacer()
-            Text(value)
-                .font(.system(size: 12))
-                .foregroundColor(textPrimary)
-        }
-    }
-
-    private func infoRow(_ label: String, value: String) -> some View {
-        HStack {
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundColor(textSecondary)
-            Spacer()
-            Text(value.isEmpty ? "-" : value)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(textPrimary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-        }
+        return activeColor
     }
 }
