@@ -348,26 +348,74 @@ object BoseProtocol {
      * Command: 04,01,05,07,00,{MAC} (START operator)
      * NEVER use 0x03 (RemoveDevice) -- it unpairs.
      *
-     * Response distinguishes success from target-offline:
-     * - ACK + RESULT (22 bytes): switch completed — target was ACL-connected
-     * - ACK only (10 bytes): target unreachable — not ACL-connected to Bose
+     * Two-phase response:
+     * 1. ACK arrives quickly (~1s) — "command received"
+     * 2. RESULT (op=0x06) arrives when the connection is established (up to ~15s
+     *    if the Bose needs to page a sleeping/disconnected device)
+     *
+     * If the target is already ACL-connected, both arrive together instantly.
+     * If not, the Bose pages the device — we must keep the channel open and wait.
      */
     fun connectDevice(mac: ByteArray): SwitchResult {
         val cmd = byteArrayOf(0x04, 0x01, OP_START, 0x07, 0x00) + mac
-        val resp = send(cmd, timeoutMs = 10000) ?: return SwitchResult.FAILED
-        if (resp.size < 4) return SwitchResult.FAILED
+        val os = outputStream ?: return SwitchResult.FAILED
+        val ins = inputStream ?: return SwitchResult.FAILED
 
-        // ACK (10 bytes) + RESULT/SET frame (12+ bytes) = switch happened
-        // ACK alone (10 bytes) = target not reachable
-        if (resp.size > 10 && resp[2] == OP_ACK) {
-            Log.i(TAG, "connectDevice: ACK + RESULT (${resp.size} bytes) — switch confirmed")
-            return SwitchResult.SWITCHED
+        try {
+            Log.d(TAG, "TX: ${cmd.toHexString()}")
+            os.write(cmd)
+            os.flush()
+
+            // Accumulate all data over the wait window. The ACK and RESULT
+            // may arrive in one read (target already connected) or in two
+            // separate reads seconds apart (target being paged).
+            val allData = ByteArray(512)
+            var totalRead = 0
+            val deadline = System.currentTimeMillis() + 15000
+            var gotAck = false
+
+            while (System.currentTimeMillis() < deadline) {
+                if (ins.available() > 0) {
+                    Thread.sleep(100) // let full frame arrive
+                    val n = ins.read(allData, totalRead, allData.size - totalRead)
+                    if (n > 0) {
+                        totalRead += n
+                        Log.d(TAG, "RX chunk ($n bytes, total=$totalRead): ${allData.copyOf(totalRead).toHexString()}")
+
+                        // Check if we have ACK
+                        if (!gotAck && totalRead >= 4 && allData[2] == OP_ACK) {
+                            gotAck = true
+                            Log.i(TAG, "connectDevice: ACK received")
+                        }
+
+                        // Check if RESULT frame has arrived (op=0x06, block=0x04, func=0x01)
+                        // It follows the ACK in the stream
+                        if (gotAck && totalRead > 10) {
+                            // Scan for the RESULT frame starting after the ACK
+                            for (i in 10 until totalRead - 3) {
+                                if (allData[i] == 0x04.toByte() &&
+                                    allData[i + 1] == 0x01.toByte() &&
+                                    allData[i + 2] == OP_SET) {
+                                    Log.i(TAG, "connectDevice: RESULT frame at offset $i — switch confirmed")
+                                    return SwitchResult.SWITCHED
+                                }
+                            }
+                        }
+                    }
+                }
+                Thread.sleep(100)
+            }
+
+            if (gotAck) {
+                Log.w(TAG, "connectDevice: ACK but no RESULT after 15s — target unreachable")
+                return SwitchResult.TARGET_OFFLINE
+            }
+            Log.w(TAG, "connectDevice: no response at all")
+            return SwitchResult.FAILED
+        } catch (e: IOException) {
+            Log.e(TAG, "connectDevice error: ${e.message}")
+            return SwitchResult.FAILED
         }
-        if (resp[2] == OP_ACK) {
-            Log.w(TAG, "connectDevice: ACK only (${resp.size} bytes) — target offline")
-            return SwitchResult.TARGET_OFFLINE
-        }
-        return SwitchResult.FAILED
     }
 
     /**
