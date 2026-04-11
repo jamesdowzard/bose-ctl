@@ -32,7 +32,7 @@ object BoseProtocol {
      *  the only option for context-free singletons. Works on all API levels. */
     @Suppress("DEPRECATION")
     private val adapter: BluetoothAdapter?
-        get() = adapter
+        get() = BluetoothAdapter.getDefaultAdapter()
 
     const val BOSE_MAC = "E4:58:BC:C0:2F:72"
 
