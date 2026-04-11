@@ -135,8 +135,29 @@ class BoseManager: ObservableObject {
                 }
             }
 
-            // Try reconnect
+            // Try reconnect — but first check whether the headphones are
+            // currently routing audio to a different device (e.g. user
+            // switched to phone/iPad from elsewhere). If so, do NOT yank
+            // audio back to Mac. RFCOMM opens its own ACL, so this works
+            // even while Mac is A2DP-disconnected.
             self.rfcommQueue.async {
+                if self.boseReady, let bose = self.bose {
+                    let active = bose.getConnectedDevices()
+                    let macMacBytes = bose.macForName("mac")
+                    let otherDeviceActive = active.contains { mac in
+                        macMacBytes == nil || mac != macMacBytes!
+                    }
+                    if otherDeviceActive {
+                        // User intentionally routed audio elsewhere —
+                        // cancel the reconnect window so we stop fighting it.
+                        DispatchQueue.main.async {
+                            self.reconnectTimer?.invalidate()
+                            self.reconnectTimer = nil
+                            self.disconnectedAt = nil
+                        }
+                        return
+                    }
+                }
                 self.btConnect()
             }
         }
