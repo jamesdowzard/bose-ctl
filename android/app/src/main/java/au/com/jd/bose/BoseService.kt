@@ -11,10 +11,8 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.media.AudioManager
 import android.os.Binder
 import android.os.IBinder
@@ -68,7 +66,6 @@ class BoseService : Service() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Bose Controller active"))
-        registerA2dpReceiver()
         setupA2dpProxy()
     }
 
@@ -126,26 +123,11 @@ class BoseService : Service() {
     // A2DP auto-accept
     // ======================================================================
 
-    private val aclReceiver = object : BroadcastReceiver() {
-        @SuppressLint("MissingPermission")
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != BluetoothDevice.ACTION_ACL_CONNECTED) return
-
-            val device = intent.getParcelableExtra(
-                BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java
-            ) ?: return
-
-            if (device.address != BoseProtocol.BOSE_MAC) return
-
-            Log.i(TAG, "Bose ACL connected -- ensuring A2DP")
-            ensureA2dp(device)
-        }
-    }
-
-    private fun registerA2dpReceiver() {
-        val filter = IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED)
-        registerReceiver(aclReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-    }
+    // ACL auto-accept removed: the old aclReceiver called ensureA2dp on
+    // every Bose ACL reconnect, which fights user switches to other devices.
+    // Samsung's BT stack auto-reconnects ACL after a drop — the receiver
+    // would then force A2DP back to the phone, stealing audio from iPad/Mac.
+    // A2DP connect for the "phone" case is handled in switchDevice instead.
 
     @SuppressLint("MissingPermission")
     private fun setupA2dpProxy() {
@@ -242,19 +224,25 @@ class BoseService : Service() {
                 return
             }
 
-            // Verify the switch actually happened — ACK only means "command
-            // received", not "audio routed". Wait for BT to settle, then
-            // check who's actually audio-active.
-            Thread.sleep(1500)
+            // Verify the switch. ACK means "command received", not "audio
+            // routed". Poll getConnectedDevices a few times — remote devices
+            // (iPad, iPhone) can take several seconds to establish A2DP.
             BoseProtocol.disconnect()
-            if (!BoseProtocol.connect()) {
-                broadcastError("Cannot verify switch — lost connection")
-                return
-            }
 
-            val activeNames = BoseProtocol.getConnectedDevices()
-                .map { BoseProtocol.nameForMac(it) }
-            val verified = activeNames.contains(deviceName)
+            var verified = false
+            var activeNames = emptyList<String>()
+            for (attempt in 1..3) {
+                Thread.sleep(2000)
+                if (!BoseProtocol.connect()) continue
+                activeNames = BoseProtocol.getConnectedDevices()
+                    .map { BoseProtocol.nameForMac(it) }
+                BoseProtocol.disconnect()
+                if (activeNames.contains(deviceName)) {
+                    verified = true
+                    break
+                }
+                Log.d(TAG, "Verify attempt $attempt: active=$activeNames, wanted=$deviceName")
+            }
 
             if (verified) {
                 Log.i(TAG, "Switch verified: $deviceName is audio-active")
@@ -275,8 +263,13 @@ class BoseService : Service() {
                 BoseWidgetProvider.updateAll(this, deviceName, activeNames.toSet())
                 broadcastStatus(deviceName, true)
             } else {
-                Log.w(TAG, "Switch NOT verified: active=$activeNames, wanted=$deviceName")
-                broadcastError("$deviceName didn't connect — is it paired and awake?")
+                // Switch wasn't confirmed but the command was ACK'd — the
+                // device may still be connecting. Update widget optimistically
+                // so the user sees feedback, but log the uncertainty.
+                Log.w(TAG, "Switch unconfirmed after 3 attempts: active=$activeNames, wanted=$deviceName")
+                updateNotification("Active: $deviceName (unconfirmed)")
+                BoseWidgetProvider.updateAll(this, deviceName, setOf(deviceName))
+                broadcastStatus(deviceName, true)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Switch error", e)
@@ -369,7 +362,6 @@ class BoseService : Service() {
     // ======================================================================
 
     override fun onDestroy() {
-        try { unregisterReceiver(aclReceiver) } catch (_: Exception) {}
         a2dpProxy?.let {
             getSystemService(BluetoothManager::class.java)?.adapter?.closeProfileProxy(BluetoothProfile.A2DP, it)
         }
